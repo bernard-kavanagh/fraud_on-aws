@@ -1,0 +1,35 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "Agent UI",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["-m", "streamlit", "run", "execution/agent_ui.py", "--server.port", "8501"],
+      "port": 8501
+    },
+    {
+      "name": "Fraud Dashboard",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["-m", "streamlit", "run", "execution/fraud_dashboard.py", "--server.port", "8502"],
+      "port": 8502
+    },
+    {
+      "name": "Sports Betting Dashboard",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["-m", "streamlit", "run", "execution/sports_betting_dashboard.py", "--server.port", "8003"],
+      "port": 8003
+    },
+    {
+      "name": "Live Pulse (Fraud)",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["live_pulse.py"],
+      "port": 8504
+    },
+    {
+      "name": "Live Pulse (Betting)",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["live_betting_pulse.py"],
+      "port": 8505
+    }
+  ]
+}
