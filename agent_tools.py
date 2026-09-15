@@ -1031,63 +1031,98 @@ def compound_resolution(content: str, confidence: float = 0.85,
                         scope: str = "global", entity_ref: str = None,
                         tenant_id: str = None, agent_id: str = None,
                         session_id: str = None, domain: str = "fraud",
-                        verdict: str = None, source: str = None):
+                        verdict: str = None, source: str = None,
+                        evidence: list = None, assessor_type: str = "agent",
+                        human: bool = False):
     """
-    Persist a confirmed verdict to the governed fact layer via record_fact.
+    Persist a confirmed verdict to the governed fact layer via record_fact, as a
+    full Evidence -> Assessment -> Resolution write.
 
-    This is the Thesis 02 line made operational, now through the AgentCore fact
-    layer instead of a local fraud_memory table: the model proposes a resolution;
-    this function maps it onto a governed fact (canonical subject + predicate +
-    value) and calls record_fact. The fact layer embeds server-side, runs the
-    deterministic contradiction test, appends a hash-chained audit event, and
-    upserts current truth — all in one ACID transaction.
+    The model proposes a resolution; this maps it onto a governed fact and calls
+    record_fact, which embeds server-side, runs predicate-specific authority
+    adjudication, appends a hash-chained event, attaches evidence references, and
+    upserts current truth in one ACID transaction.
 
-    Mapping (see fact_layer_client.py subject-key convention):
-      subject    : entity_subject(domain, entity_ref) for an entity verdict;
-                   catalog_subject(domain, content) for a scope='global' canonical
-                   pattern with no live entity.
-      predicate  : FRAUD_PREDICATE / BETTING_PREDICATE (default 'status').
-      value      : the verdict label (scalar) so genuine re-confirmations
-                   corroborate and genuine disagreements (e.g. cleared vs
-                   fraudulent) adjudicate; catalog seeds store `content`.
-      source     : the agent/model identity (SOURCE_AGENT) by default, or a
-                   human-reviewer identity (SOURCE_HUMAN) for manual resolutions.
-      confidence : passed through; the write-control floor is enforced
-                   SERVER-SIDE by record_fact (removed from here — task 5).
+    Mapping (see fact_layer_client.py):
+      subject       : entity_subject(domain, entity_ref) for an entity verdict;
+                      catalog_subject(domain, content) for a scope='global' pattern.
+      predicate     : FRAUD_PREDICATE / BETTING_PREDICATE (fraud_status / liability_status,
+                      which carry predicate-specific authority in the fact layer).
+      value         : the scalar verdict label so agreements corroborate and
+                      disagreements adjudicate (cleared vs confirmed, etc).
+      source        : agent identity by default (agent_inference); a human review
+                      uses human_investigator (top authority) when human=True or
+                      source is given.
+      evidence      : references back to the fraud domain (transaction_id, alert_id,
+                      investigation_id, ...) — {evidence_type, evidence_ref, ...}.
+      context_summary: the banded description -> folded into the semantic embedding.
+      confidence    : passed through; write-control floor enforced SERVER-SIDE.
+      idempotency_key: derived so a retried resolution does not double-write.
     """
     tenant_id = resolve_tenant_id(tenant_id)
     agent_id = resolve_agent_id(agent_id)
     fl = _fact_layer()
 
     predicate = fl.FRAUD_PREDICATE if domain == "fraud" else fl.BETTING_PREDICATE
+    entity_type = None
     if entity_ref:
         subject = fl.entity_subject(domain, entity_ref)
         value = verdict or _DEFAULT_VERDICT.get(domain, "confirmed")
+        # Derive a canonical entity_type from the subject shape (customer/ip/...).
+        entity_type = subject.split(":", 2)[1] if subject.count(":") >= 2 else "entity"
     else:
-        # scope='global' canonical pattern — signature-scoped catalog subject,
-        # value carries the banded description (distinct subject, no corroboration
-        # concern) so recall surfaces the pattern text.
         subject = fl.catalog_subject(domain, content)
         value = verdict or content
+        entity_type = "pattern"
 
-    src = source or fl.SOURCE_AGENT
+    # A human resolution outranks the agent's inference for fraud_status.
+    src = source or (fl.SOURCE_HUMAN if human else fl.SOURCE_AGENT)
+    resolved_assessor = "human" if (human or src == fl.SOURCE_HUMAN) else assessor_type
+    # Stable idempotency key so a retried identical resolution replays, not doubles.
+    idem = f"{session_id or 'nosession'}:{subject}:{value}"
+
     try:
         res = fl.record_fact(
             tenant_id=tenant_id, subject=subject, predicate=predicate,
             value=value, source=src, confidence=confidence,
             agent_id=agent_id, session_id=session_id,
+            entity_type=entity_type, canonical_key=(entity_ref or subject),
+            assessor_type=resolved_assessor, evidence=evidence,
+            context_summary=content, idempotency_key=idem,
         )
         if res.get("error"):
             return f"❌ record_fact rejected: {res['error']}"
+        replay = " (idempotent replay)" if res.get("idempotent_replay") else ""
         return (
             f"✅ fact recorded — subject={subject} predicate={predicate} "
-            f"decision={res.get('decision')} status={res.get('status')} "
-            f"event_id={res.get('event_id')}"
+            f"outcome={res.get('outcome')} status={res.get('status')} "
+            f"policy={res.get('policy_version')} event_id={res.get('event_id')}"
+            f"{replay}"
             + (f" competing={res['competing_event_ids']}"
                if res.get("competing_event_ids") else "")
         )
     except Exception as e:
         return f"❌ Compound Error (fact layer): {e}"
+
+
+def explain_fact(entity_ref: str, domain: str = "fraud", tenant_id: str = None):
+    """Ask the governed fact layer WHY the current verdict for an entity holds.
+
+    Returns the full provenance (resolution, authority, supporting vs contrary
+    evidence, assessments, history) so the agent can answer "why do we believe
+    this?" rather than just restating a verdict. Read-only, tenant-scoped.
+    """
+    tenant_id = resolve_tenant_id(tenant_id)
+    fl = _fact_layer()
+    predicate = fl.FRAUD_PREDICATE if domain == "fraud" else fl.BETTING_PREDICATE
+    subject = fl.entity_subject(domain, entity_ref)
+    try:
+        res = fl.explain_fact(tenant_id=tenant_id, subject=subject, predicate=predicate)
+        if res.get("error"):
+            return f"No governed fact for {subject}/{predicate}: {res['error']}"
+        return json.dumps(res, default=str)
+    except Exception as e:
+        return f"❌ explain_fact error (fact layer): {e}"
 
 
 def seed_fraud_memory_from_adapter(adapter=None, tenant_id: str = None,

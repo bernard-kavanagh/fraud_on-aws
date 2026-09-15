@@ -195,24 +195,32 @@ python execution/betting_investigation.py "<trigger text>" [entity_ref]
 
 Terminal version of the cognitive-foundation investigation loop. Same lifecycle as the Admin path in Demo 2 (assemble → route → tool-use → slim summary), no UI. Useful for showing raw tool-trace output or scripting investigations against the betting adapter. Pass an entity_ref (customer_id or IP) for the full Tier 4 prior-investigations lookup.
 
-### Demo 5 — Governed reconciliation (live supersede + dispute)
+### Demo 5 — Governed adjudication (Evidence → Assessment → Resolution)
 
-Drives the governed fact layer directly to show single-mode reconciliation:
+The fact layer now models **predicate-specific, versioned authority** and
+distinguishes evidence, assessment, and resolution. Verdicts are written under
+predicate `fraud_status` (which carries per-source authority), with evidence
+references and assessor type. This demo shows all three adjudication outcomes:
 
 ```bash
 DEMO_TENANT_ID=demo-bank-alpha python scenarios/contradiction_demo.py
 ```
 
-- **Scenario A (supersede by authority):** a lower-authority source asserts a
-  verdict; a higher-authority source asserts the opposite on the same subject →
-  `record_fact` **supersedes**. The prior claim stays in the append-only,
-  hash-chained `fact_event` log.
-- **Scenario B (equal-authority dispute):** two equal-authority sources
-  contradict on the same subject → resolves to **`disputed`**, both events
-  retained, no recency tiebreak.
+- **A — SUPERSEDED:** `agent_inference` says `cleared`; `human_investigator`
+  (higher authority for `fraud_status`) says `confirmed` with evidence
+  (INV-847, CB-991) → supersedes; the prior claim stays in the hash-chained log.
+- **B — REJECTED (the key one):** `fraud_review` says `confirmed`; a
+  `user_assertion` says `legitimate`. Because a customer is *low* authority for
+  `fraud_status`, the contradiction is **retained as contrary evidence** and does
+  **not** overturn the confirmation (no auto-dispute).
+- **C — DISPUTED:** two comparable-authority reviewers contradict → `disputed`,
+  both retained, no recency tiebreak.
 
-The script prints each `record_fact` decision and the tenant metric deltas. To
-see the retained prior claim yourself, run the **single-query RCA** in
+It then calls **`explain_fact`** to show *why* the current verdict holds
+(resolution, authoritative source + policy version, supporting vs contrary
+evidence, history). The agent loop also exposes `explain_fact` as a tool, and
+`compound_resolution` now forwards evidence refs + assessor type + an idempotency
+key. To see the full retained lineage, run the **single-query RCA** in
 [`sql/rca_lineage.sql`](sql/rca_lineage.sql) against the fact layer's TiDB with
 the tenant + subject the script prints — it reconstructs the fact's entire
 lineage (first assertion → every supersede/dispute → current truth) in one query.

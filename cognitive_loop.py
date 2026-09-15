@@ -24,6 +24,7 @@ from agent_tools import (
     flag_order,
     write_reasoning_checkpoint,
     compound_resolution,
+    explain_fact,
     MODEL_SUMMARY,
 )
 from tenancy import resolve_tenant_id, resolve_agent_id
@@ -143,9 +144,38 @@ TOOL_SCHEMAS = [
                 "confidence": {"type": "number"},
                 "scope": {"type": "string", "enum": ["global", "entity"]},
                 "entity_ref": {"type": "string", "description": "Focal customer_id or IP for an entity verdict."},
-                "verdict": {"type": "string", "description": "Optional canonical verdict label (e.g. 'confirmed_fraud', 'cleared'). Same label corroborates; a different label adjudicates."},
+                "verdict": {"type": "string", "description": "Optional canonical verdict label (e.g. 'confirmed', 'cleared'). Same label corroborates; a different label adjudicates by authority."},
+                "evidence": {
+                    "type": "array",
+                    "description": "References back to the evidence you cited (never copies). Each: {evidence_type, evidence_ref}, e.g. {'evidence_type':'transaction','evidence_ref':'TX-123'}.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "evidence_type": {"type": "string"},
+                            "evidence_ref": {"type": "string"},
+                            "relationship": {"type": "string", "enum": ["SUPPORTS", "CONTRADICTS", "DERIVED_FROM", "TRIGGERED_BY", "REVIEWED_IN"]},
+                        },
+                        "required": ["evidence_type", "evidence_ref"],
+                    },
+                },
             },
             "required": ["content", "confidence"],
+        },
+    },
+    {
+        "name": "explain_fact",
+        "description": (
+            "Ask the governed fact layer WHY the current verdict for an entity holds: "
+            "resolution, authoritative source + policy version, supporting vs contrary "
+            "evidence, assessments, and history. Use to answer 'why do we believe this?' "
+            "or to check what is already durably known before re-investigating."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "entity_ref": {"type": "string", "description": "Focal customer_id or IP to explain."},
+            },
+            "required": ["entity_ref"],
         },
     },
 ]
@@ -220,11 +250,14 @@ def _dispatch_tool(name: str, args: dict, session_id: str,
             scope=args.get("scope", "global"),
             entity_ref=args.get("entity_ref"),
             verdict=args.get("verdict"),
+            evidence=args.get("evidence"),
             tenant_id=tenant_id,
             agent_id=agent_id,
             session_id=session_id,
             domain=domain,
         )
+    if name == "explain_fact":
+        return explain_fact(args["entity_ref"], domain=domain, tenant_id=tenant_id)
     return f"❌ Unknown tool: {name}"
 
 
