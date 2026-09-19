@@ -13,10 +13,16 @@ caller (aws/test_fact_layer.py): a Cognito bearer token via boto3
 `streamablehttp_client` with an `Authorization: Bearer <token>` header. Nothing
 here re-implements storage, adjudication, or hashing.
 
-Exposes three thin wrappers over the Gateway tools:
+Exposes thin wrappers over the nine generic Fact Layer Gateway tools:
   * record_fact(...)          -> the governed write path (adjudicated server-side)
+  * get_fact(...)             -> current resolved fact for (tenant, subject, predicate)
+  * get_fact_history(...)     -> append-only event lineage
+  * explain_fact(...)         -> full provenance / why the current fact holds
+  * list_disputes(...)        -> facts in a disputed resolution
+  * search_entities(...)      -> structured entity lookup
   * vector_search(...)        -> tenant-scoped semantic recall (embedded server-side)
   * query_tenant_metrics(...) -> enumerated named metrics only
+  * retract_fact(...)         -> lifecycle retraction (append-only)
 
 ===========================================================================
 CANONICAL SUBJECT-KEY CONVENTION  (task 2 — read before calling record_fact)
@@ -31,15 +37,17 @@ corroboration, no supersede) or (b) unrelated facts collide.
 Two hard constraints from the deployed fact layer shape these choices:
 
   1. PREDICATE MUST BE REGISTERED. record_fact rejects any predicate not in the
-     fact layer's `predicate_rule` table. That table (seeded in the aws repo,
-     which we must not modify) currently holds only: status (scalar),
-     last_seen (monotonic), known_aliases (set), notes (freetext). A scalar
-     `status` gives us precisely the corroborate/supersede/dispute semantics we
-     want for a verdict, so verdicts map to predicate **"status"**. The task's
-     intended domain names ("fraud_verdict", "liability_status") are exposed as
-     env-overridable constants below (FRAUD_PREDICATE / BETTING_PREDICATE) for
-     when an operator adds those rows to predicate_rule; they default to
-     "status" so the port runs against the fact layer as it ships today.
+     fact layer's `predicate_rule` registry. The generic fact layer ships
+     domain-neutral core predicates (status [scalar], last_seen [monotonic],
+     known_aliases [set], notes [freetext]); THIS deployment additionally SEEDS
+     domain predicates — `fraud_status` and `liability_status` — into that same
+     registry (with predicate-specific authority; see the constants block below).
+     Seeding domain vocabulary is deployment DATA: it does not make the generic
+     fact layer fraud-specific — the tools and mechanism stay domain-neutral.
+     Accordingly FRAUD_PREDICATE / BETTING_PREDICATE default to `fraud_status` /
+     `liability_status` (env-overridable). Against a deployment that has NOT
+     seeded them, override to a registered predicate such as `status`, which
+     gives the same corroborate/supersede/dispute semantics.
 
   2. VECTOR_SEARCH EMBEDS THE SUBJECT STRING, NOT THE VALUE. Semantic recall
      (Tier 5) matches a trigger against `subject_vec` = embed(subject). So the
@@ -193,9 +201,10 @@ def _gateway_url() -> str:
 def _tenant_credentials(tenant_id: str) -> tuple[str, str, str]:
     """Resolve (client_id, username, password) for authenticating AS a tenant.
 
-    The fact layer injects tenant_id into the request context from the JWT
-    `tenant_id` claim, so authenticating as a tenant means using a Cognito user
-    whose token carries that claim. Two resolution paths:
+    In the reference governance profile the Gateway authorizes a call by
+    comparing the `tenant_id` tool argument (the requested data scope) to the
+    caller's JWT `tenant_id` claim — so authenticating for a tenant means using a
+    Cognito user whose token carries that claim. Two resolution paths:
 
       1. FACT_LAYER_TENANT_CREDENTIALS — JSON map keyed by tenant_id:
          {"demo-bank-alpha": {"client_id": "...", "username": "...",
@@ -304,8 +313,9 @@ def record_fact(*, tenant_id: str, subject: str, predicate: str, value,
                 idempotency_key: str | None = None) -> dict:
     """Record a fact (assessment/resolution) through the governed write path.
 
-    tenant_id is sent as the tool argument AND is the identity the token
-    authenticates as (Cedar compares them).
+    tenant_id is the requested data scope, sent as the tool argument. In the
+    reference governance profile the Gateway authorizes the call by comparing it
+    to the caller's token `tenant_id` claim (Cedar tenant-equality).
 
     Evidence -> Assessment -> Resolution fields (all optional, forwarded to the
     fact layer's record_fact): entity_type/canonical_key bind the fact to a
@@ -314,8 +324,9 @@ def record_fact(*, tenant_id: str, subject: str, predicate: str, value,
     enriches the semantic embedding; valid_from/valid_to are the real-world
     validity window; idempotency_key makes retries safe.
 
-    agent_id / session_id are threaded for provenance intent but NOT sent as tool
-    args — the deployed interceptor derives them from the verified identity.
+    agent_id / session_id are provenance INTENT only and are NOT propagated to the
+    MCP target (an MCP Lambda target receives only the tool arguments; there is no
+    interceptor-injected identity and no _fact_ctx side channel).
     Write control (minimum confidence) is enforced SERVER-SIDE.
     """
     args = {

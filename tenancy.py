@@ -2,10 +2,11 @@
 Tenancy + agent identity resolution for the governed-fact-layer port.
 
 Every fact written to (or read from) the AgentCore fact layer is scoped to a
-`tenant_id`, and the fact layer's Cedar policy compares that tenant_id LITERALLY
-against the caller's JWT `tenant_id` claim before the call reaches TiDB. This
-module is the single place this repo resolves *which* tenant a given
-invocation is acting as — from an explicit argument, then the environment.
+`tenant_id` — the requested DATA SCOPE. In the reference governance profile the
+Gateway authorizes the call by comparing that tenant_id (the tool argument)
+LITERALLY against the caller's JWT `tenant_id` claim before it reaches TiDB. This
+module is the single place this repo resolves *which* tenant a given invocation
+is acting as — from an explicit argument, then the environment.
 
 Design rule (task 9): **never hardcode a single tenant_id anywhere.** If a
 caller cannot supply one and `DEMO_TENANT_ID` is unset, we refuse to run rather
@@ -54,12 +55,11 @@ def resolve_tenant_id(tenant_id: str | None = None) -> str:
 def resolve_agent_id(agent_id: str | None = None) -> str:
     """Resolve the acting agent identity for fact provenance.
 
-    NOTE: on a fully-deployed fact layer, agent_id is injected server-side by
-    the Gateway request interceptor from the verified caller identity and the
-    caller cannot forge it (see aws/handlers/common/context.py). This value is
-    threaded through anyway (task 9) so the caller records its *intended*
-    provenance and so a future interceptor mapping can pick it up; the deployed
-    interceptor remains authoritative.
+    NOTE: an MCP Lambda target receives only the tool arguments — there is no
+    interceptor-injected identity and no _fact_ctx side channel (see the fact
+    layer's ARCHITECTURE.md). agent_id is therefore provenance INTENT that this
+    caller records; propagating a verified caller identity to the target is a
+    separate future design, not a current guarantee.
     """
     return agent_id or os.getenv(_AGENT_ID_ENV) or "ag_fraud_detection.agent"
 

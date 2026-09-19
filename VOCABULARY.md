@@ -127,4 +127,3 @@ Do not name competitors in prepared external content. Frame by category.
 | [MANIFESTO.html](../GTM/MANIFESTO.html) | 12 theses — the philosophical anchor |
 | [AGENT_LIFECYCLE.md](../GTM/AGENT_LIFECYCLE.md) | Empirical evidence — confidence ramp, routing economics, measured numbers |
 | [directives/tidb_agent_demo.md](./directives/tidb_agent_demo.md) | Demo directive: lifecycle, business value, demo flow, procedural memory |
-| [REDUNDANT_CODE_AUDIT.md](./REDUNDANT_CODE_AUDIT.md) | Current cleanup state for this repo |

@@ -9,8 +9,10 @@ its OWN target on the fact layer's Gateway — it is deliberately NOT a metric
 inside query_tenant_metrics (which stays domain-agnostic). Reads are typed and
 enumerated: the caller supplies bounded parameters, never SQL.
 
-Tenant filtering is defense in depth — Cedar authorizes the call and the
-interceptor injects the verified tenant; the WHERE clause is the third layer.
+Tenant filtering scopes the data to the requested tenant_id (taken from the tool
+argument). Authorization that the caller may select that scope is the Gateway
+governance layer's job (reference profile: Cedar tenant-equality); the WHERE
+clause here is data scoping, not authorization.
 """
 
 from __future__ import annotations

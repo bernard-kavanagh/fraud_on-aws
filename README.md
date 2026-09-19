@@ -4,7 +4,7 @@ Adaptive fraud detection with three-tier memory, substrate-driven model routing,
 
 This repo is one of three implementations of the **cognitive foundation** architecture. The same memory substrate runs [industrial IoT](https://github.com/bernard-kavanagh/ev_charger_anomaly_detection) and [database operations](https://github.com/bernard-kavanagh/tidb-self-healing-db-agent); here it's adapted to e-commerce transactions and sports betting via [`adapters/fraud/`](adapters/fraud/__init__.py) and [`adapters/betting/`](adapters/betting/__init__.py).
 
-> **Governed fact layer (this port).** Semantic memory — confirmed fraud/betting verdicts and their recall — no longer lives in a local `fraud_memory` table. It is now the **AgentCore Governed Fact Layer**, a separately-deployed standalone service (its own Gateway, Cognito JWT auth, Cedar per-tenant isolation, deterministic adjudication, tamper-evident hash-chained audit, server-side embedding). This repo is a **caller** of that service over MCP — see [`fact_layer_client.py`](fact_layer_client.py). Reconciliation is now **live, single-mode** (auto-supersede-by-authority or dispute); deduplication is **retired** in favour of canonical subject keys; every domain table is **tenant-scoped**. See [ARCHITECTURE.md](ARCHITECTURE.md) → *Custodial duties* and [MEMORY_MAINTENANCE_POC.md](MEMORY_MAINTENANCE_POC.md).
+> **Governed fact layer (this port).** Semantic memory — confirmed fraud/betting verdicts and their recall — no longer lives in a local `fraud_memory` table. It is now the **AgentCore Governed Fact Layer**, a separately-deployed, **domain-neutral** standalone service (deterministic adjudication, tamper-evident hash-chained audit, server-side embedding) fronted by an AgentCore Gateway. This repo is a **caller** of that service over MCP — see [`fact_layer_client.py`](fact_layer_client.py). `tenant_id` is the **requested data scope** the caller passes; authorizing that scope is the Gateway governance layer's job (**reference profile**: Cognito JWT + Cedar tenant-equality — not intrinsic to the fact layer; its authoritative contract is the fact layer repo's `ARCHITECTURE.md`). Reconciliation is now **live, single-mode** (auto-supersede-by-authority or dispute); deduplication is **retired** in favour of canonical subject keys; every domain table is **tenant-scoped**. See [ARCHITECTURE.md](ARCHITECTURE.md) → *Custodial duties* and [MEMORY_MAINTENANCE_POC.md](MEMORY_MAINTENANCE_POC.md).
 
 > **For the architecture deep-dive — three-tier memory, custodial duties, the four-step lifecycle, what's shipped vs POC — see [ARCHITECTURE.md](ARCHITECTURE.md).**
 
@@ -225,10 +225,11 @@ key. To see the full retained lineage, run the **single-query RCA** in
 the tenant + subject the script prints — it reconstructs the fact's entire
 lineage (first assertion → every supersede/dispute → current truth) in one query.
 
-> **Cross-tenant deny:** point `DEMO_TENANT_ID` at one tenant while authenticating
-> with a token whose `tenant_id` claim is the *other* tenant and the fact layer's
-> Cedar policy denies the call at the Gateway, before TiDB is touched. Requires two
-> distinct tenant identities (see `FACT_LAYER_TENANT_CREDENTIALS`).
+> **Cross-tenant deny (reference profile, ENFORCE):** point `DEMO_TENANT_ID` at one
+> tenant while authenticating with a token whose `tenant_id` claim is the *other*
+> tenant; the reference Cedar tenant-equality policy denies the call at the Gateway
+> (in ENFORCE), before TiDB is touched. Requires two distinct tenant identities
+> (see `FACT_LAYER_TENANT_CREDENTIALS`).
 
 ### Domain read tools on the fact-layer Gateway
 

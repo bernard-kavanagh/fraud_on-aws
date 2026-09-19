@@ -258,7 +258,6 @@ governed fact model. We build those with you, not for you.
 
 ## References
 
-- [REDUNDANT_CODE_AUDIT.md](./REDUNDANT_CODE_AUDIT.md) — current state of the codebase
 - [directives/tidb_agent_demo.md](./directives/tidb_agent_demo.md) — demo flow + business value mapping
 - [VOCABULARY.md](./VOCABULARY.md) — canonical terminology
 - [README.md](./README.md) — repo overview and architecture

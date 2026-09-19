@@ -26,7 +26,7 @@ layer's **existing** AgentCore Gateway as additional Lambda targets:
 handlers/
   transaction_velocity.py      # FraudVelocity target
   liability_concentration.py   # BettingLiability target
-  common/context.py            # interceptor-context extraction (mirrors fact layer)
+  common/context.py            # reads the tenant_id selector from the tool argument (mirrors the fact layer's corrected context contract)
   common/db.py                 # SQLAlchemy engine from a Secrets Manager ARN
 schemas/                       # tool inputSchemas (type:object at top level, no json wrapper)
 cedar/domain_reads.cedar       # additive tenant-isolation permits (2 actions)
