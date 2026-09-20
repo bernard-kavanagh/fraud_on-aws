@@ -252,14 +252,54 @@ def decode_claims(token: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Logical tool name -> AgentCore Gateway MCP tool name
+# ---------------------------------------------------------------------------
+# This module's public API and internal callers speak in LOGICAL tool names
+# (vector_search, record_fact, ...). The live AgentCore Gateway namespaces each
+# MCP tool as "<TargetName>___<tool>". Keep the two decoupled: one explicit map,
+# resolved once immediately before session.call_tool(). If the Gateway ever
+# renames a target, this table is the only edit site.
+_GATEWAY_TOOL_NAMES = {
+    "explain_fact": "ExplainFact___explain_fact",
+    "get_fact_history": "GetFactHistory___get_fact_history",
+    "get_fact": "GetFact___get_fact",
+    "list_disputes": "ListDisputes___list_disputes",
+    "query_tenant_metrics": "QueryTenantMetrics___query_tenant_metrics",
+    "record_fact": "RecordFact___record_fact",
+    "retract_fact": "RetractFact___retract_fact",
+    "search_entities": "SearchEntities___search_entities",
+    "vector_search": "VectorSearch___vector_search",
+}
+
+
+def _resolve_gateway_tool(logical_name: str) -> str:
+    """Map a logical Fact Layer tool name to its Gateway MCP tool name.
+
+    Fails closed: an unknown logical name is a programming error (typo or a tool
+    added without a mapping), never a silent pass-through that would reach the
+    Gateway as an unknown tool.
+    """
+    try:
+        return _GATEWAY_TOOL_NAMES[logical_name]
+    except KeyError:
+        raise ValueError(
+            f"Unknown Fact Layer tool '{logical_name}'. Known logical tools: "
+            f"{', '.join(sorted(_GATEWAY_TOOL_NAMES))}."
+        ) from None
+
+
+# ---------------------------------------------------------------------------
 # MCP call plumbing
 # ---------------------------------------------------------------------------
 async def _acall_tool(gateway_url: str, token: str, tool_name: str, arguments: dict):
     headers = {"Authorization": f"Bearer {token}"}
+    # Resolve the logical name to the Gateway's namespaced tool name immediately
+    # before the call, so the wire always carries the real MCP tool name.
+    gateway_tool_name = _resolve_gateway_tool(tool_name)
     async with streamablehttp_client(gateway_url, headers=headers) as (read, write, _):
         async with ClientSession(read, write) as session:
             await session.initialize()
-            return await session.call_tool(tool_name, arguments=arguments)
+            return await session.call_tool(gateway_tool_name, arguments=arguments)
 
 
 def _parse_result(result) -> dict:

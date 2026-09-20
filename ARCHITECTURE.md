@@ -1,6 +1,6 @@
 # Architecture — The Cognitive Foundation
 
-This document is the architectural deep-dive for the fraud detection repo. For setup, demo instructions, and troubleshooting, see [README.md](README.md). For the POC-phase design questions on Reconciliation and Compaction, see [MEMORY_MAINTENANCE_POC.md](MEMORY_MAINTENANCE_POC.md). For canonical cognitive foundation vocabulary, see [VOCABULARY.md](VOCABULARY.md).
+This document is the architectural deep-dive for the fraud detection repo. For setup, demo instructions, and troubleshooting, see [README.md](README.md). For the POC-phase design questions on Reconciliation and Compaction, see [MEMORY_MAINTENANCE_POC.md](MEMORY_MAINTENANCE_POC.md).
 
 ---
 
@@ -204,5 +204,4 @@ The cognitive foundation eliminates these separations architecturally — enrich
 
 - **[README.md](README.md)** — setup, demo instructions, troubleshooting, known-good triggers
 - **[MEMORY_MAINTENANCE_POC.md](MEMORY_MAINTENANCE_POC.md)** — design questions for Reconciliation and Compaction (customer-facing)
-- **[VOCABULARY.md](VOCABULARY.md)** — canonical cognitive foundation vocabulary (synced from GTM canonical)
 - **[directives/tidb_agent_demo.md](directives/tidb_agent_demo.md)** — the lifecycle in operator language

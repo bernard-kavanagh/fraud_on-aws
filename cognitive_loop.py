@@ -1,5 +1,5 @@
 """
-Cognitive foundation investigation loop.
+TiDB Fact Layer - Cognitive investigation loop.
 
 This is the Stage 4 module: a real tool-use loop where the LLM chooses
 which tool to call next based on what it has seen. Replaces the previous
@@ -409,10 +409,10 @@ def run_investigation(trigger_text: str, session_id: str,
     # ----- STAGE 4: slim summary call (read structured checkpoint, NOT loop replay) -----
     # Fallback: if the model never called write_reasoning_checkpoint, synthesise
     # one from tool_trace so the demo never shows an empty report mid-presentation.
-    summary = _slim_summary(session_id, client)
+    summary = _slim_summary(session_id, client, tenant_id)
     if summary.get("error") and "no reasoning checkpoint" in (summary.get("error") or "") and tool_trace:
         _synthesise_fallback_checkpoint(session_id, trigger_text, tool_trace, routing)
-        summary = _slim_summary(session_id, client)
+        summary = _slim_summary(session_id, client, tenant_id)
         summary["fallback_synthesised"] = True
     if on_event:
         on_event("summary", summary)
@@ -462,7 +462,7 @@ def _synthesise_fallback_checkpoint(session_id: str, trigger_text: str,
     )
 
 
-def _slim_summary(session_id: str, client) -> dict:
+def _slim_summary(session_id: str, client, tenant_id: str) -> dict:
     """
     Read the latest agent_reasoning checkpoint for this session and build a
     focused 500-1500 token prompt for Haiku. The summary is generated from
@@ -471,9 +471,17 @@ def _slim_summary(session_id: str, client) -> dict:
     This is the Stage 5 pattern from AGENT_LIFECYCLE.md §2 — eliminates ~37%
     of input tokens per investigation and removes the empty-report failure
     mode that came from sending the full loop messages array.
+
+    tenant_id is the investigation's workflow scope, threaded in from
+    run_investigation. session_id is a unique UUID bound to one tenant, so the
+    agent_sessions join + tenant_id filter is defense-in-depth that keeps this
+    reasoning read unambiguously tenant-scoped. Fails closed on a missing tenant.
     """
     from agent_tools import get_db_connection
     from mysql.connector import Error
+
+    if not tenant_id:
+        return {"error": "summary read refused: missing tenant scope", "report": None}
 
     conn = None
     checkpoint = None
@@ -481,12 +489,13 @@ def _slim_summary(session_id: str, client) -> dict:
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
         cursor.execute(
-            """SELECT reasoning_id, observation, hypothesis, evidence_refs,
-                      confidence, resolution
-               FROM agent_reasoning
-               WHERE session_id = %s
-               ORDER BY created_at DESC LIMIT 1""",
-            (session_id,),
+            """SELECT ar.reasoning_id, ar.observation, ar.hypothesis,
+                      ar.evidence_refs, ar.confidence, ar.resolution
+               FROM agent_reasoning ar
+               JOIN agent_sessions s ON s.session_id = ar.session_id
+               WHERE ar.session_id = %s AND s.tenant_id = %s
+               ORDER BY ar.created_at DESC LIMIT 1""",
+            (session_id, str(tenant_id)),
         )
         checkpoint = cursor.fetchone()
     except Error as e:

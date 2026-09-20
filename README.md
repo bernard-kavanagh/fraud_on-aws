@@ -49,6 +49,14 @@ The fraud-velocity query and the betting-liability query both use `/*+ read_from
 ### 1. Install dependencies
 
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
+
+python --version
+pip install --upgrade pip
+```
+
+```bash
 pip install -r requirements.txt
 ```
 
@@ -67,10 +75,15 @@ TIDB_HOST=gateway01.<region>.prod.aws.tidbcloud.com
 TIDB_PORT=4000
 TIDB_USER=<your-prefix>.root
 TIDB_PASSWORD=<your-password>
-TIDB_DATABASE=test
+TIDB_DATABASE=agentcore_fraud
 TIDB_SSL_CA=/path/to/isrgrootx1.pem
 ANTHROPIC_API_KEY=sk-ant-...
 ```
+
+> `TIDB_DATABASE` is **this repo's own operational/workflow database**
+> (`agentcore_fraud`). It is **not** the Governed Fact Layer's database — the
+> fact layer is a separate service reached only over MCP (the `FACT_LAYER_*` /
+> `COGNITO_*` settings below) and owns its own database independently.
 
 > Starter and Dedicated clusters use slightly different host patterns — copy whatever the Connect dialog shows.
 
@@ -96,10 +109,25 @@ AWS_REGION=<region>
 
 In the TiDB Cloud console, open your cluster → **SQL Editor** → paste `schema.sql` → run.
 
-This creates all tables in one step. Every **domain** table carries a `tenant_id`
-column (§11 of `schema.sql`); episodic checkpoints live in `agent_reasoning`.
-Semantic memory (confirmed verdicts) is no longer a table here — it's the
-governed fact layer. The schema file is idempotent — safe to re-run.
+`schema.sql` begins with `CREATE DATABASE IF NOT EXISTS agentcore_fraud; USE
+agentcore_fraud;` and creates **only this repo's operational/workflow tables** in
+one step. Every **domain** table carries a `tenant_id` column (§11 of
+`schema.sql`); episodic checkpoints live in `agent_reasoning`. Workflow/episodic
+state is tenant-isolated too: `agent_sessions.tenant_id` is the workflow scope
+(application data scope, **not** principal identity), and prior-investigation
+recall (Tier 4) filters on it so identical entity ids across tenants never
+collide — `chat_history`/`agent_reasoning` inherit that scope through their unique
+`session_id`. The schema file is idempotent — safe to re-run.
+
+> **This must not initialize the Fact Layer.** Semantic memory (confirmed
+> verdicts) is no longer a table here — it lives in the separately-deployed
+> **Governed Fact Layer**, which owns its own database (`entity`, `fact_subject`,
+> `fact_event`, `fact_evidence`, `fact_current`, `predicate_rule`, ...) and is
+> created/migrated by *its own* repo. Running `schema.sql` creates the
+> `agentcore_fraud` database only. Fact Layer evidence rows reference **back** to
+> the operational records created here (e.g. an order/transaction id); neither
+> side copies the other's tables. Both databases may co-reside on the same TiDB
+> cluster with separate ownership.
 
 ### 4. Seed the demo data (per tenant)
 
@@ -262,7 +290,6 @@ The **Clayton Knight investigation** is the strongest single demo — the agent 
 Agent_AG/
 ├── ARCHITECTURE.md          # Architecture deep-dive: theses, custodial duties, lifecycle
 ├── MEMORY_MAINTENANCE_POC.md  # Reconciliation live (single-mode); HITL-queue + Compaction remain POC decisions
-├── VOCABULARY.md            # Canonical cognitive foundation vocabulary
 │
 ├── agent_tools.py           # Substrate: assemble_context (Tier 5 = fact layer),
 │                            #   route_investigation, recall_similar_fraud (fact layer),

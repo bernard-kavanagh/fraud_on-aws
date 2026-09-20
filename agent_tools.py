@@ -34,7 +34,7 @@ DB_CONFIG = {
     'port': int(os.getenv('TIDB_PORT', 4000)),
     'user': os.getenv('TIDB_USER'),
     'password': os.getenv('TIDB_PASSWORD'),
-    'database': os.getenv('TIDB_DATABASE', 'test'),
+    'database': os.getenv('TIDB_DATABASE', 'agentcore_fraud'),
     'ssl_ca': os.getenv('TIDB_SSL_CA'),
     'autocommit': True
 }
@@ -565,13 +565,17 @@ def assemble_context(entity_ref: str = None, session_id: str = None,
             sources["t2_recent"] = {"tokens": 0, "status": t2_status}
 
         # ----- TIER 3: active investigation checkpoint (substrate) -----
+        # session_id is a unique UUID bound to one tenant, so this is already
+        # single-tenant; the agent_sessions join + tenant_id filter makes the
+        # scope explicit (defense in depth) and consistent with Tier 4.
         if session_id:
             cursor.execute(
-                """SELECT observation, hypothesis, confidence
-                   FROM agent_reasoning
-                   WHERE session_id = %s
-                   ORDER BY created_at DESC LIMIT 1""",
-                (session_id,)
+                """SELECT ar.observation, ar.hypothesis, ar.confidence
+                   FROM agent_reasoning ar
+                   JOIN agent_sessions s ON s.session_id = ar.session_id
+                   WHERE ar.session_id = %s AND s.tenant_id = %s
+                   ORDER BY ar.created_at DESC LIMIT 1""",
+                (session_id, tenant_id)
             )
             row = cursor.fetchone()
             if row:
@@ -1194,15 +1198,25 @@ def write_reasoning_checkpoint(session_id: str, observation: str, hypothesis: st
 
 
 # --- TOOL 5: THE STATE MACHINE (Memory) ---
-def create_session(session_id: str, user_id: str = "guest", metadata: dict = None):
+def create_session(session_id: str, tenant_id: str, user_id: str = "guest",
+                   metadata: dict = None):
     """
     Initializes a new session in TiDB to satisfy Foreign Key constraints.
+
+    tenant_id is REQUIRED: it is the workflow data scope every downstream
+    episodic/workflow read filters on (Tier 3 active checkpoint, Tier 4 prior
+    investigations, the slim-summary read). It is application DATA SCOPE — NOT the
+    authenticated principal identity — and it must be threaded in from the
+    already-established investigation tenant, never inferred from a customer id.
+    An empty/blank tenant fails closed (ValueError) rather than writing an
+    un-scoped session that Tier 4 could later leak across tenants.
 
     Convention for cognitive-foundation investigations:
       - Set user_id = str(entity_ref) (customer_id or ip_address) when starting
         an entity-focused investigation. Tier 4 in assemble_context joins on
-        agent_sessions.user_id; sessions created with 'guest' or a UI-level
-        label will silently return no prior investigations for that entity.
+        agent_sessions.user_id AND agent_sessions.tenant_id; sessions created with
+        'guest' or a UI-level label will silently return no prior investigations
+        for that entity.
 
     Audit-trail conventions (metadata JSON):
       - source              : where the session was created from. Examples:
@@ -1220,21 +1234,30 @@ def create_session(session_id: str, user_id: str = "guest", metadata: dict = Non
     Both fields are metadata-only (no schema change). Elevate to columns if
     you want indexed lineage queries; the data is already there.
     """
+    # Fail closed: workflow context must never be created un-scoped.
+    if not tenant_id or not str(tenant_id).strip():
+        raise ValueError(
+            "create_session requires an explicit non-empty tenant_id (workflow "
+            "data scope). Refusing to create an un-scoped session — Tier 4 prior-"
+            "investigation recall filters on it and would otherwise cross tenants."
+        )
+    tenant_id = str(tenant_id).strip()
+
     conn = None
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
 
         sql = """
-            INSERT INTO agent_sessions (session_id, user_id, metadata)
-            VALUES (%s, %s, %s)
+            INSERT INTO agent_sessions (session_id, tenant_id, user_id, metadata)
+            VALUES (%s, %s, %s, %s)
         """
         # Honest metadata. Caller-supplied; we don't fabricate a source.
         meta = json.dumps(metadata or {})
 
-        cursor.execute(sql, (session_id, user_id, meta))
+        cursor.execute(sql, (session_id, tenant_id, user_id, meta))
         conn.commit()
-        print(f"✅ Session {session_id} created.")
+        print(f"✅ Session {session_id} created (tenant={tenant_id}).")
 
     except Error as e:
         print(f"❌ Session Creation Failed: {e}")

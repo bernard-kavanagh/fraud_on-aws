@@ -6,13 +6,50 @@
 
 
 /*
-   TiDB Schema for Antigravity Agent Demo
-   --------------------------------------
-   Purpose: Supports a Sales Engineering Agent capable of:
-   1. Real-time Analytics (HTAP)
-   2. Semantic Search (Vector)
-   3. Stateful Conversation (Episodic Memory)
+   agentcore_fraud — AgentCore Fraud Application: operational + workflow schema
+   ===========================================================================
+   This is the OPERATIONAL/WORKFLOW database for the AgentCore redesign of the
+   earlier standalone fraud-agent template. It owns exactly two things:
+
+     1. Operational domain state   — the fraud/betting transactions, customers,
+                                      products, reviews, and auxiliary signals the
+                                      agent investigates (HTAP + vector/RAG).
+     2. Workflow / episodic state  — agent sessions, chat history, and structured
+                                      reasoning checkpoints for the investigation
+                                      loop.
+
+   IT DOES NOT OWN governed semantic memory. Confirmed fraud/betting verdicts,
+   their adjudication, tamper-evident audit, and semantic recall now live in the
+   separately-deployed **AgentCore Governed Fact Layer** (a domain-neutral sibling
+   service, owned by its own repo), accessed only over MCP/Gateway via
+   fact_layer_client.py. That service owns its OWN database on the same TiDB
+   cluster:
+
+     TiDB cluster
+     ├── <fact-layer database>   — owned by the Fact Layer repo (entity,
+     │                             entity_alias, fact_subject, fact_event,
+     │                             fact_evidence, fact_current, fact_idempotency,
+     │                             predicate_rule, source_rank, authority_policy)
+     └── agentcore_fraud         — owned by THIS repo (the tables below)
+
+   DO NOT add any Fact Layer table to this file. Creating this database must NOT
+   initialize or reinitialize the Fact Layer. Fact Layer evidence rows reference
+   BACK to the operational records here (e.g. an order/transaction id); this repo
+   never copies fact-layer tables and the fact layer never copies these.
+
+   Capabilities this schema supports:
+   1. Real-time Analytics (HTAP — TiKV row store + TiFlash columnar replica)
+   2. Semantic Search (Vector / HNSW — products, sales_knowledge, reviews)
+   3. Stateful Conversation + structured reasoning (Episodic/Workflow Memory)
 */
+
+-- ==========================================
+-- 0. DATABASE (Repo 2 operational/workflow DB)
+-- ==========================================
+-- Own database, separate ownership + contract from the Fact Layer's database.
+-- May co-reside on the same TiDB cluster.
+CREATE DATABASE IF NOT EXISTS agentcore_fraud;
+USE agentcore_fraud;
 
 -- ==========================================
 -- 1. FACT MEMORY (Relational Data)
@@ -81,13 +118,26 @@ CREATE TABLE IF NOT EXISTS sales_knowledge (
 -- 3. EPISODIC MEMORY (Agent State)
 -- ==========================================
 
--- Sessions: Tracks distinct user conversations
+-- Sessions: Tracks distinct user conversations.
+--
+-- tenant_id is the WORKFLOW ISOLATION KEY for all episodic/workflow state. It is
+-- application DATA SCOPE (which tenant's investigation this is), NOT the
+-- authenticated principal identity. session_id is a globally-unique UUID, so a
+-- session belongs to exactly one tenant; chat_history and agent_reasoning inherit
+-- tenant scope transitively via their session_id FK and therefore do NOT
+-- duplicate the column. The one read that keys off a NON-unique identifier —
+-- Tier 4 prior-investigation lookup by user_id (= entity_ref) — MUST filter on
+-- tenant_id via this table, or identical entity ids across tenants would collide
+-- (see adapters/*/tier_4_prior and idx_sessions_tenant_user below).
 CREATE TABLE IF NOT EXISTS agent_sessions (
     session_id VARCHAR(36) PRIMARY KEY, -- UUID
+    tenant_id VARCHAR(64) NOT NULL,     -- workflow data scope (NOT principal identity)
     user_id VARCHAR(100),
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    metadata JSON -- Flexible context like {"sentiment": "positive"}
+    metadata JSON, -- Flexible context like {"sentiment": "positive"}
+    -- Supports the Tier 4 pattern: WHERE user_id = ? AND tenant_id = ?
+    INDEX idx_sessions_tenant_user (tenant_id, user_id)
 );
 
 -- Chat History: The "Black Box" recorder for Root Cause Analysis (RCA)
@@ -206,44 +256,40 @@ ALTER TABLE betting_events SET TIFLASH REPLICA 1;
 ALTER TABLE bets SET TIFLASH REPLICA 1;
 
 -- ==========================================
--- 7. COGNITIVE FOUNDATION — SEMANTIC MEMORY (fraud_memory)
+-- 7. SEMANTIC MEMORY — RETIRED TO THE GOVERNED FACT LAYER
 -- ==========================================
 
 /*
-   fraud_memory — the semantic memory tier of the cognitive foundation.
+   fraud_memory (RETIRED — intentionally NOT created by this schema).
 
-   Stores confirmed fraud patterns learned from prior investigations as
-   vector-indexed records, scoped globally or per-entity (customer/IP).
-   This is the table that turns the system from static RAG into compounding
-   semantic memory: every confirmed fraud event becomes a recallable pattern
-   for future agent sessions.
+   The old standalone implementation kept confirmed fraud patterns in a LOCAL
+   `fraud_memory` vector table maintained by five in-process custodial duties.
+   In the AgentCore redesign that entire tier is superseded by the governed
+   AgentCore Fact Layer:
 
-   Maintained by the five custodial duties:
-     - write control:      only confirmed outcomes persist
-     - deduplication:      cosine distance < 0.15 → merge
-     - reconciliation:     superseded_by chains the supersede event
-     - confidence decay:   unreinforced patterns fade over time
-     - compaction:         periodic re-clustering keeps the store lean
+     old:  local fraud_memory  (CREATE TABLE + TiFlash + VECTOR INDEX here)
+     new:  Governed Fact Layer over MCP — record_fact / vector_search /
+           get_fact / get_fact_history / explain_fact / retract_fact / ...
+           (see fact_layer_client.py)
+
+   Confirmed verdicts are written with record_fact under canonical subject keys
+   (<domain>:<kind>:<identifier>); recall is server-side-embedded vector_search
+   (Titan V2, 1024-dim), tenant-scoped by the Gateway. Corroboration/supersede/
+   dispute replace the old cosine-distance dedup + local decay.
+
+   No current executable Repo 2 code reads or writes this table on any live path:
+     * assemble_context() Tier 5  -> fact_layer_client.vector_search
+     * recall_similar_fraud()     -> fact_layer_client.vector_search
+     * compound_resolution()      -> fact_layer_client.record_fact
+     * seed_fraud_memory_from_adapter() -> record_fact (name kept; writes facts)
+   The only remaining Python references (reinforce_pattern / decay_fraud_memory /
+   compact_fraud_memory in agent_tools.py) are explicitly LEGACY/disconnected and
+   never called by the investigation loop, so the CREATE TABLE / TiFlash /
+   VECTOR INDEX DDL is removed from future initialization.
+
+   This is NOT authorization to DROP an existing fraud_memory table on any live
+   cluster — it is only removed from fresh Repo 2 initialization.
 */
-CREATE TABLE IF NOT EXISTS fraud_memory (
-    pattern_id          INT AUTO_INCREMENT PRIMARY KEY,
-    scope               ENUM('global', 'entity') NOT NULL DEFAULT 'global',
-    entity_ref          VARCHAR(100) NULL,                -- customer_id or ip_address when scope='entity'
-    content             TEXT NOT NULL,                    -- semantically-banded pattern description
-    embedding           VECTOR(384),                      -- all-MiniLM-L6-v2 output
-    confidence          DECIMAL(4,3) NOT NULL DEFAULT 0.850,
-    evidence_count      INT NOT NULL DEFAULT 1,
-    superseded_by       INT NULL,                         -- pattern_id that supersedes this row
-    last_reinforced_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
-    created_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
-    INDEX idx_scope_entity (scope, entity_ref),
-    INDEX idx_superseded (superseded_by)
-);
-
-ALTER TABLE fraud_memory SET TIFLASH REPLICA 1;
-
-ALTER TABLE fraud_memory DROP INDEX IF EXISTS idx_fraud_mem_embedding;
-ALTER TABLE fraud_memory ADD VECTOR INDEX idx_fraud_mem_embedding ((VEC_COSINE_DISTANCE(embedding)));
 
 -- ==========================================
 -- 8. COGNITIVE FOUNDATION — EPISODIC CHECKPOINTS (agent_reasoning)
@@ -261,7 +307,8 @@ ALTER TABLE fraud_memory ADD VECTOR INDEX idx_fraud_mem_embedding ((VEC_COSINE_D
    The contract:
      - observation:    what the agent saw (signals, anomalies)
      - hypothesis:     what the agent thinks is happening
-     - evidence_refs:  JSON list of pointers (order_ids, IPs, fraud_memory pattern_ids)
+     - evidence_refs:  JSON list of pointers (order_ids, IPs, and governed Fact
+                       Layer subject keys / evidence refs — not local table ids)
      - confidence:     the agent's calibrated confidence in the resolution
      - resolution:     what was decided/done (flag, clear, escalate)
 */
@@ -401,10 +448,13 @@ ALTER TABLE odds_history SET TIFLASH REPLICA 1;
 -- primary demo tenant; seed scripts write both demo-bank-alpha and
 -- demo-bank-beta explicitly.
 --
--- Memory tables (agent_sessions, chat_history, agent_reasoning) are NOT
--- tenant-scoped here: conversational/episodic state is out of the fact layer's
--- scope (that tier is AgentCore Memory's job), and confirmed verdicts now live
--- in the governed fact layer, which enforces tenant isolation via Cedar.
+-- Workflow/episodic tables: agent_sessions carries tenant_id (declared inline
+-- above) as the workflow isolation key. chat_history and agent_reasoning are
+-- scoped TRANSITIVELY through their session_id FK (session_id is a unique UUID
+-- bound to one tenant at create_session time), so they intentionally do NOT
+-- duplicate the column — every workflow read either keys on the unique session_id
+-- or joins agent_sessions and filters tenant_id (Tier 4). Confirmed verdicts live
+-- in the governed fact layer, which enforces its own tenant isolation via Cedar.
 
 -- Primary domain tables (idempotent on clusters predating the inline column):
 ALTER TABLE customers        ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(64) NOT NULL DEFAULT 'demo-bank-alpha';

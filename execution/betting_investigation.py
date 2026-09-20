@@ -36,10 +36,10 @@ def main():
     session_id = str(uuid.uuid4())
     create_session(
         session_id,
+        tenant_id,
         user_id=str(entity_ref) if entity_ref else "betting_cli",
         metadata={
             "source": "betting_investigation.cli",
-            "tenant_id": tenant_id,
             "entity_ref": str(entity_ref) if entity_ref else None,
         },
     )
