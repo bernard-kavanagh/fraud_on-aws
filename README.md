@@ -1,46 +1,438 @@
-# TiDB Fraud Detection — Cognitive Foundation for Fintech
+# TiDB Fraud Detection — Live Data, Agentic Investigation, Governed Facts
 
-Adaptive fraud detection with three-tier memory, substrate-driven model routing, and a **governed, multi-tenant fact layer** on TiDB. No vector store, no warehouse, no ETL pipeline.
+> This project demonstrates how **TiDB can serve as the unified data substrate for a real-time AI application** — handling live transactional data, real-time analytics, vector retrieval, agent state, and the data underpinning a governed fact layer without requiring separate operational databases, warehouses, vector stores, or ETL pipelines.
 
-This repo is one of three implementations of the **cognitive foundation** architecture. The same memory substrate runs [industrial IoT](https://github.com/bernard-kavanagh/ev_charger_anomaly_detection) and [database operations](https://github.com/bernard-kavanagh/tidb-self-healing-db-agent); here it's adapted to e-commerce transactions and sports betting via [`adapters/fraud/`](adapters/fraud/__init__.py) and [`adapters/betting/`](adapters/betting/__init__.py).
+The application uses **e-commerce fraud detection and sports-betting risk** as two example domains.
 
-> **Governed fact layer (this port).** Semantic memory — confirmed fraud/betting verdicts and their recall — no longer lives in a local `fraud_memory` table. It is now the **AgentCore Governed Fact Layer**, a separately-deployed, **domain-neutral** standalone service (deterministic adjudication, tamper-evident hash-chained audit, server-side embedding) fronted by an AgentCore Gateway. This repo is a **caller** of that service over MCP — see [`fact_layer_client.py`](fact_layer_client.py). `tenant_id` is the **requested data scope** the caller passes; authorizing that scope is the Gateway governance layer's job (**reference profile**: Cognito JWT + Cedar tenant-equality — not intrinsic to the fact layer; its authoritative contract is the fact layer repo's `ARCHITECTURE.md`). Reconciliation is now **live, single-mode** (auto-supersede-by-authority or dispute); deduplication is **retired** in favour of canonical subject keys; every domain table is **tenant-scoped**. See [ARCHITECTURE.md](ARCHITECTURE.md) → *Custodial duties* and [MEMORY_MAINTENANCE_POC.md](MEMORY_MAINTENANCE_POC.md).
+Live events are written to TiDB while TiFlash analyzes those same records in real time. An AI agent investigates suspicious activity using operational data, analytical signals, retrieved context, and previous investigations. Confirmed conclusions can then be promoted into a separately governed fact layer with evidence, authority, lineage, contradiction handling, and tenant isolation.
 
-> **For the architecture deep-dive — three-tier memory, custodial duties, the four-step lifecycle, what's shipped vs POC — see [ARCHITECTURE.md](ARCHITECTURE.md).**
+The end-to-end pattern is:
+
+```text
+Live data → real-time analytics → agent investigation → governed facts
+```
+
+The domain can change. **The underlying TiDB substrate does not.**
+
+---
+
+## What this project demonstrates
+
+Most agentic applications accumulate infrastructure as their data requirements grow:
+
+* an operational database for live application state
+* a warehouse or analytical store for aggregations
+* a vector database for semantic retrieval
+* pipelines to synchronize those systems
+* a separate store for agent workflow and investigation state
+* additional infrastructure for durable organizational knowledge
+
+This project explores a different architecture.
+
+**TiDB provides one distributed SQL substrate across the application's live data, analytics, retrieval, and agent workflow.**
+
+| Requirement             | TiDB capability                     | Demonstrated here                                                    |
+| ----------------------- | ----------------------------------- | -------------------------------------------------------------------- |
+| Live transactional data | TiKV                                | Orders, customers, bets, investigation state                         |
+| Real-time analytics     | TiFlash / HTAP                      | Fraud velocity and betting liability against live data               |
+| Semantic retrieval      | Native Vector / HNSW                | Product, policy, review, and contextual retrieval                    |
+| Agent workflow state    | Transactional SQL                   | Sessions, reasoning checkpoints, prior investigations                |
+| Governed facts          | TiDB-backed standalone fact service | Confirmed verdicts, evidence, lineage, authority, and contradictions |
+| Write-back              | Transactional SQL                   | Flag orders, flag bettors, adjust odds                               |
+
+Because TiKV and TiFlash operate over the same logical data, analytical queries can run against transactions that are still arriving.
+
+There is no batch handoff from the operational database to a warehouse before the agent can reason over the latest state.
+
+> **One database. Live operational and analytical context. No synchronization lag.**
+
+---
+
+## Architecture at a glance
+
+```text
+                 LIVE APPLICATION DATA
+                         │
+                         ▼
+              ┌─────────────────────┐
+              │        TiDB         │
+              │                     │
+              │  TiKV    TiFlash    │
+              │  SQL     Vector     │
+              └──────────┬──────────┘
+                         │
+                 operational data
+                 analytical signals
+                 semantic retrieval
+                 prior investigations
+                         │
+                         ▼
+              ┌─────────────────────┐
+              │   Investigation     │
+              │       Agent         │
+              │                     │
+              │ assemble → route →  │
+              │ investigate → act   │
+              └──────────┬──────────┘
+                         │
+                 confirmed conclusion
+                         │
+                         ▼
+              ┌─────────────────────┐
+              │   Governed Fact     │
+              │       Layer         │
+              │                     │
+              │ evidence            │
+              │ authority           │
+              │ lineage             │
+              │ reconciliation      │
+              │ tenant isolation    │
+              └──────────┬──────────┘
+                         │
+                         ▼
+                  GOVERNED FACTS
+```
+
+The [`Governed Fact Layer`](https://github.com/bernard-kavanagh/tidb_agentcore_gateway_mcp_tools) is a separately deployed, domain-neutral service accessed by this application over MCP through an Amazon Bedrock AgentCore Gateway.
+
+That separation is intentional.
+
+An agent's investigation state and a durable organizational fact are not the same thing.
+
+A model may infer that a transaction is fraudulent. That inference should not automatically become accepted truth.
+
+The fact layer therefore models:
+
+```text
+Evidence → Assessment → Resolution
+```
+
+Conflicting assertions can be **superseded, retained as contrary evidence, or marked disputed** according to predicate-specific source authority. The complete history remains available as an auditable lineage.
+
+This repo is a **caller** of that service through [`fact_layer_client.py`](fact_layer_client.py). The fact layer owns its own database and lifecycle independently of this application's operational schema.
+
+For the deeper design — including investigation state, semantic facts, custodial duties, reconciliation, tenancy, and the lifecycle of knowledge — see [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ---
 
 ## The demos
 
-**Demo 1 — Fraud Dashboard (HTAP, 30-second hook).** Live transactions write to TiKV every 500 ms. A TiFlash columnar query detects velocity anomalies across those same rows in real time. One database. No ETL.
+The fastest way to understand the architecture is to run the demos.
 
-**Demo 2 — Agent UI (the cognitive foundation in action).** Two flows in one interface — a customer RAG path (vector search + Haiku) and an admin investigation path (5-tier context assembly → substrate-driven routing → tool-use loop → structured checkpoint). Every stage streams into the chain-of-thought sidebar.
+### Demo 1 — Live Fraud Detection
 
-**Demo 3 — Sports Betting Dashboard (same substrate, different vertical).** Same HTAP pattern, applied to sportsbook risk and fraud — liability concentration and betting-velocity anomalies, with adjust-odds and flag-bettor write-backs. Proves the adapter pattern: same code, different domain catalog.
+Live transactions are inserted into **TiKV every 500 ms** while a **TiFlash columnar query** detects transaction-velocity anomalies across those same records.
 
-A CLI version of the cognitive-foundation investigation loop (`python execution/betting_investigation.py "<trigger>" [entity_ref]`) is available for raw tool-trace output without the Streamlit layer.
+```text
+ Live transactions
+       │
+       ▼
+     TiKV ───────────────┐
+       │                 │ same logical data
+       ▼                 ▼
+ application          TiFlash
+    state            aggregation
+                         │
+                         ▼
+                  fraud signals
+```
+
+This is the core HTAP demonstration:
+
+> **Live writes + live analytics, without an ETL pipeline or separate warehouse.**
+
+The Fraud Dashboard shows:
+
+* **Active Alerts** — orders flagged as suspicious
+* **Revenue at Risk** — value of pending or flagged orders
+* **Velocity Anomalies** — IPs with abnormal transaction activity
+* **Live Risk Queue** — the real-time transaction stream
+
+The **Investigate with Agent →** action passes suspicious activity directly into the investigation workflow.
+
+---
+
+### Demo 2 — Agent Investigation
+
+The Agent UI demonstrates how an agent can reason directly over the same data substrate.
+
+Two contrasting flows are included.
+
+#### Customer / RAG
+
+The customer path combines SQL and vector retrieval for questions about purchases, products, return policies, and shipping policies.
+
+For example:
+
+```text
+Can I return my gaming laptop?
+```
+
+The application retrieves the customer's purchase data through SQL, retrieves the relevant return policy semantically, and synthesizes the answer.
+
+#### Admin / Investigation
+
+The admin path demonstrates the investigation lifecycle:
+
+```text
+Trigger
+   │
+   ▼
+Assemble context
+   │
+   ├── operational records
+   ├── analytical signals
+   ├── retrieved knowledge
+   ├── prior investigations
+   └── governed facts
+   │
+   ▼
+Route investigation
+   │
+   ▼
+Tool-use loop
+   │
+   ▼
+Reasoning checkpoint
+   │
+   ▼
+Assessment / action
+```
+
+The agent can query evidence, investigate anomalies, recall previous cases, write operational actions, and promote validated conclusions to the governed fact layer.
+
+### What the agent can discover
+
+One seeded scenario illustrates why this is more than scripted anomaly detection.
+
+A chargeback investigation for a customer named **Clayton Knight** contains six chargebacks across two rotating cards.
+
+The suspicious relationship itself is **not encoded in the fraud-pattern catalog**.
+
+During the investigation, the agent independently correlates account and delivery history and discovers that **five of the six disputed orders were recorded as delivered before the customer's signup date**.
+
+```text
+Chargeback investigation
+          │
+          ├── customer history
+          ├── six disputed orders
+          ├── two payment cards
+          └── delivery records
+                    │
+                    ▼
+              agent correlates
+               the timelines
+                    │
+                    ▼
+       5 deliveries before signup
+```
+
+The important capability is not that the system can retrieve a known fraud rule.
+
+**It can investigate relationships in live operational data and surface evidence that was not pre-labelled as the anomaly to find.**
+
+---
+
+### Demo 3 — Same Substrate, Different Domain
+
+The sports-betting dashboard applies the same architecture to a different vertical.
+
+Instead of e-commerce orders, the live stream contains bets.
+
+TiFlash detects:
+
+* **Liability Concentration** — excessive stake accumulating on one side of an event
+* **Betting Velocity Anomalies** — unusually high betting activity from an IP
+
+Operational write-backs can then:
+
+* adjust odds
+* flag a bettor's account
+
+The important point is not the betting example itself.
+
+It demonstrates the **adapter pattern**:
+
+```text
+                   TiDB substrate
+                         │
+              investigation lifecycle
+                         │
+             ┌───────────┴───────────┐
+             ▼                       ▼
+       Fraud adapter           Betting adapter
+             │                       │
+             ▼                       ▼
+      transaction risk         sportsbook risk
+```
+
+The domain catalog and tools change.
+
+**The data substrate and investigation lifecycle stay the same.**
+
+---
+
+### Demo 4 — Governed Facts and Contradictions
+
+The governed adjudication demo shows what happens after an investigation produces a conclusion.
+
+The fact layer distinguishes:
+
+```text
+Evidence → Assessment → Resolution
+```
+
+For a predicate such as `fraud_status`, different sources can have different levels of authority.
+
+The demo exercises three outcomes.
+
+#### SUPERSEDED
+
+An `agent_inference` says a transaction is `cleared`.
+
+A higher-authority `human_investigator` subsequently says it is `confirmed`, backed by investigation and chargeback evidence.
+
+The human assessment supersedes the earlier conclusion, while the original assertion remains in the history.
+
+#### REJECTED AS CONTRARY EVIDENCE
+
+An established fraud review says the transaction is `confirmed`.
+
+A `user_assertion` claims it was `legitimate`.
+
+Because the user assertion has lower authority for the `fraud_status` predicate, it does not silently overwrite or dispute the established fact.
+
+It is instead **retained as contrary evidence**.
+
+#### DISPUTED
+
+Two comparable-authority reviewers reach contradictory conclusions.
+
+Neither conclusion wins merely because it arrived later.
+
+The fact becomes `disputed`, and both assertions remain available for resolution.
+
+The current state can then be explained through its lineage:
+
+```text
+ original assertion
+        │
+        ├── evidence
+        │
+        ▼
+ subsequent assertion
+        │
+        ├── authority policy
+        ├── supporting evidence
+        ├── contrary evidence
+        ▼
+ current resolution
+```
+
+The agent can call `explain_fact` to retrieve **why** the current verdict holds: the resolution, authoritative source, applicable policy version, supporting and contrary evidence, and historical assertions.
+
+This gives the application something fundamentally different from ordinary conversational memory:
+
+> **A governed, explainable record of what the system currently accepts as fact — and why.**
+
+---
+
+## Why TiDB?
+
+The architectural proposition demonstrated by this repo is simple:
+
+> **An AI application should not need to copy its data through multiple specialized stores before an agent can reason over it.**
+
+A conventional architecture can quickly become:
+
+```text
+Operational DB ─────────┐
+                        │
+                        ├── ETL / streaming ──► Warehouse
+                        │
+                        ├── sync ─────────────► Vector DB
+                        │
+                        └── application ──────► Agent store
+                                                    │
+                                                    ▼
+                                                  Agent
+```
+
+Every additional copy introduces another synchronization boundary, another operational dependency, and another question about which representation is current.
+
+This project instead uses:
+
+```text
+                    ┌──────────────┐
+Live application ──►│              │
+       data         │     TiDB     │
+                    │              │
+                    │  ┌────────┐  │
+                    │  │  TiKV  │  │
+                    │  └────────┘  │
+                    │  ┌────────┐  │
+                    │  │TiFlash │  │
+                    │  └────────┘  │
+                    │  ┌────────┐  │
+                    │  │ Vector │  │
+                    │  └────────┘  │
+                    └──────┬───────┘
+                           │
+                           ▼
+                         Agent
+```
+
+TiDB combines transactional storage, real-time analytical processing, vector retrieval, and SQL access on one distributed data platform.
+
+The agent can therefore investigate against the same operational reality the application is using rather than waiting for that reality to propagate through several specialized stores.
+
+The governed fact layer remains a **distinct service** because governance is a different responsibility from application state.
+
+It owns the rules around evidence, authority, reconciliation, lineage, and tenant-scoped durable facts.
+
+But TiDB can still provide the durable data substrate underneath both systems.
+
+> **TiDB unifies the data substrate. The fact layer governs what becomes durable truth.**
 
 ---
 
 ## What TiDB replaces here
 
-| TiDB capability | What it replaces | Where it appears |
-|---|---|---|
-| TiKV (row store) | Transactional DB | Order history, customer data, live bets, agent memory |
-| TiFlash (columnar / HTAP) | Separate data warehouse | Fraud velocity, liability concentration — live against TiKV writes |
-| Native Vector / HNSW index | Separate vector database | Product search, policy retrieval; fraud/betting verdict recall via the governed fact layer (server-side embedding) |
-| Unified SQL interface | Multiple connection strings | One driver, one port (4000), all capabilities |
-| Transactional write-back | Application-level orchestration | `flag_order`, `adjust_odds`, `flag_bettor` write directly |
+| TiDB capability          | What it replaces                     | Where it appears                                               |
+| ------------------------ | ------------------------------------ | -------------------------------------------------------------- |
+| TiKV                     | Separate transactional database      | Orders, customers, bets, agent workflow state                  |
+| TiFlash / HTAP           | Separate analytical warehouse        | Fraud velocity and liability concentration against live writes |
+| Native Vector / HNSW     | Separate vector database             | Product, policy, review, and contextual retrieval              |
+| Unified SQL              | Multiple data-access layers          | One SQL interface across operational and analytical workloads  |
+| Transactional write-back | Additional application orchestration | `flag_order`, `adjust_odds`, `flag_bettor`                     |
 
-The fraud-velocity query and the betting-liability query both use `/*+ read_from_storage(tiflash[...]) */` to aggregate across the columnar engine while the live pulse is *simultaneously* inserting rows into TiKV. Same data, same database, no sync lag. No Flink, no Kafka, no enrichment store.
+The fraud-velocity and betting-liability queries explicitly target TiFlash while their corresponding live-pulse processes simultaneously insert new records through TiKV.
+
+Same logical data. Same database.
+
+**No warehouse synchronisation step is required before the analytical signal becomes available to the application or agent.**
+
+---
+
+## Where to go next
+
+If you want to **see TiDB HTAP in action**, start with the **Fraud Dashboard**.
+
+If you want to **see an agent investigate operational data**, run the **Agent UI** and use the Clayton Knight chargeback scenario.
+
+If you want to **see the same substrate applied to another vertical**, run the **Sports Betting Dashboard**.
+
+If you want to **see evidence, authority, lineage, and contradiction handling**, run the **Governed Adjudication** demo.
+
+For the deeper architectural design, see [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ---
 
 ## Prerequisites
 
-- Python 3.10+
-- A [TiDB Cloud Starter](https://tidbcloud.com) cluster (free tier works)
-- The `isrgrootx1.pem` SSL certificate — available in the Connect dialog under **Connection Type → General → CA certificate**
+* Python 3.10+
+* A [TiDB Cloud Starter](https://tidbcloud.com) cluster — the free tier works
+* The `isrgrootx1.pem` SSL certificate — available in the TiDB Cloud **Connect** dialog under **Connection Type → General → CA certificate**
 
 ---
 
