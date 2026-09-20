@@ -109,7 +109,11 @@ Evidence → Assessment → Resolution
 
 Conflicting assertions can be **superseded, retained as contrary evidence, or marked disputed** according to predicate-specific source authority. The complete history remains available as an auditable lineage.
 
-This repo is a **caller** of that service through [`fact_layer_client.py`](fact_layer_client.py). The fact layer owns its own database and lifecycle independently of this application's operational schema.
+This repo is a **caller** of that service through [`fact_layer_client.py`](fact_layer_client.py). The agent interacts with it through typed MCP tools such as record_fact, explain_fact, get_fact, get_fact_history, and vector_search rather than receiving generic SQL access to the Fact Layer.
+
+This boundary is deliberate: the application asks the Fact Layer to perform governed operations; it does not reach through the service boundary and manipulate its tables directly.
+
+The Fact Layer owns its own TiDB schema and lifecycle independently of this application's operational schema. Its implementation, MCP tool contracts, adjudication rules, and Amazon Bedrock AgentCore Gateway deployment live in the tidb_agentcore_gateway_mcp_tools repository.
 
 For the deeper design — including investigation state, semantic facts, custodial duties, reconciliation, tenancy, and the lifecycle of knowledge — see [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
@@ -276,15 +280,34 @@ The domain catalog and tools change.
 
 The governed adjudication demo shows what happens after an investigation produces a conclusion.
 
-The fact layer distinguishes:
+The Fact Layer deliberately separates **evidence**, **assessment**, and **resolution**:
+
+| Stage          | Question                                          | Example                                                               |
+| -------------- | ------------------------------------------------- | --------------------------------------------------------------------- |
+| **Evidence**   | **Why?**                                          | Transaction, alert, chargeback, investigation record                  |
+| **Assessment** | **What does this source think?**                  | An agent infers `fraud_status=confirmed`                              |
+| **Resolution** | **What do we currently accept as fact, and why?** | The current governed verdict, authority policy, evidence, and lineage |
+
+This distinction matters because an agent inference is an **assessment**, not automatically a confirmed fact.
 
 ```text
-Evidence → Assessment → Resolution
+Evidence
+   │
+   ▼
+Assessment
+   │
+   │  source + authority + evidence
+   ▼
+Resolution
+   │
+   ▼
+Current governed fact
 ```
 
-For a predicate such as `fraud_status`, different sources can have different levels of authority.
+A new assessment may agree with the current resolution or contradict it. The Fact Layer evaluates that assertion against predicate-specific authority rules and existing evidence rather than simply allowing the latest write to win.
 
-The demo exercises three outcomes.
+For a predicate such as `fraud_status`, the demo exercises three possible outcomes:
+
 
 #### SUPERSEDED
 
@@ -584,7 +607,7 @@ Switch roles in the sidebar to see two contrasting memory shapes.
 - `"What headphones do you have?"` — semantic product search via vector index
 - `"What's the shipping policy for VIP customers?"` — vector search against `sales_knowledge`
 
-**As "Admin" — the cognitive-foundation path:**
+**As "Admin" — the investigation path:**
 - `"Give me a business overview"` — HTAP aggregate across customers, orders, products
 - `"What do customers think about the gaming laptop?"` — vector search on the `reviews` table
 - `"Give me a sentiment overview across all products"` — TiFlash sentiment aggregation, no separate ML pipeline
@@ -613,7 +636,7 @@ Two signals refresh every 2 seconds:
 python execution/betting_investigation.py "<trigger text>" [entity_ref]
 ```
 
-Terminal version of the cognitive-foundation investigation loop. Same lifecycle as the Admin path in Demo 2 (assemble → route → tool-use → slim summary), no UI. Useful for showing raw tool-trace output or scripting investigations against the betting adapter. Pass an entity_ref (customer_id or IP) for the full Tier 4 prior-investigations lookup.
+Terminal version of the agent investigation loop. Same lifecycle as the Admin path in Demo 2 (assemble → route → tool-use → slim summary), no UI. Useful for showing raw tool-trace output or scripting investigations against the betting adapter. Pass an entity_ref (customer_id or IP) for the full Tier 4 prior-investigations lookup.
 
 ### Demo 5 — Governed adjudication (Evidence → Assessment → Resolution)
 
@@ -748,25 +771,22 @@ For the architecture, theses, custodial-duty implementation details, and POC-pha
 
 ---
 
-## Composability with TiDB Python SDK
+## Related TiDB Agent Architectures
 
-PingCAP's official [pytidb](https://github.com/pingcap/pytidb) SDK ships an MCP server, a Pydantic-style schema layer, and built-in embedding functions (cloud-hosted Titan, AWS Bedrock-hosted Titan via Bedrock IAM, or local). The Cognitive Foundation **composes with pytidb**, not against it: pytidb is the data-access layer, the Cognitive Foundation provides the memory semantics — typed three-tier memory, custodial duties, substrate-driven routing — one layer above it. Adopting pytidb's `EmbeddingFunction` or its MCP server requires no schema changes here. Both projects converge on TiDB as the substrate for AI-era memory, which we treat as independent corroboration of the architectural bet rather than a competing approach.
+This repo is part of a set of projects exploring how TiDB can act as the data and memory substrate for agentic applications across different operational domains.
 
-See [ARCHITECTURE.md](ARCHITECTURE.md#differentiation-pytidb-is-the-sdk-this-is-the-pattern) for the differentiation table and production-deployment shape.
+| Repo                                                                                                       | Domain              | Architecture spotlight                                            | Business outcome                                                          |
+| ---------------------------------------------------------------------------------------------------------- | ------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| [`tidb-self-healing-db-agent`](https://github.com/bernard-kavanagh/tidb-self-healing-db-agent)             | Database operations | Procedural knowledge, write control, and safe remediation         | Reduced MTTR with controlled autonomous remediation                       |
+| [`ev_charger_anomaly_detection`](https://github.com/bernard-kavanagh/ev_charger_anomaly_detection)         | Industrial IoT      | Long-running monitoring, semantic knowledge, and memory lifecycle | Continuous anomaly detection with bounded agent cost                      |
+| [`fraud_on-aws`](https://github.com/bernard-kavanagh/fraud_on-aws)                                         | Fintech / Gaming    | Live HTAP, agent investigation, and governed facts                | Adaptive fraud investigation, auditable facts, and multi-tenant isolation |
+| [`tidb_agentcore_gateway_mcp_tools`](https://github.com/bernard-kavanagh/tidb_agentcore_gateway_mcp_tools) | Domain-neutral      | Governed Fact Layer exposed through typed MCP tools               | Evidence-backed, explainable institutional knowledge                      |
+
+The applications differ in domain and agent behaviour, but share the same architectural proposition:
+
+> **Keep operational data, analytical context, retrieval, and durable agent knowledge close to the data substrate. Let the domain and agent workflow change without multiplying data infrastructure.**
 
 ---
 
-## Cognitive Foundation Portfolio
+> **TiDB unifies the data substrate. The Fact Layer governs what becomes durable truth.**
 
-This repo is one of three implementations demonstrating the cognitive foundation across different domains:
-
-| Repo | Domain | Memory tier spotlight | Custodial duty spotlight | Business outcome |
-|---|---|---|---|---|
-| [`tidb-self-healing-db-agent`](https://github.com/bernard-kavanagh/tidb-self-healing-db-agent) | Database operations | **Procedural** | Write control + branching safety | Reduced MTTR, safe autonomous remediation |
-| [`ev_charger_anomaly_detection`](https://github.com/bernard-kavanagh/ev_charger_anomaly_detection) | Industrial IoT | **Semantic** | All five duties — the production reference | 10× token reduction, 24/7 monitoring at capped cost |
-| [`tidb_fraud_detection`](https://github.com/bernard-kavanagh/tidb_fraud_detection) | Fintech / Gaming | **Three tiers, two adapters, governed fact layer** | Write Control + Reconciliation live server-side (single-mode); Dedup retired (canonical subject keys); Decay + Compaction + HITL-queue as POC decisions | Adaptive fraud detection, regulatory-grade audit trail, multi-tenant isolation, multi-vertical adapter proof |
-
-All three repos run on the same principle: a **unified data substrate** where the agent's memory lives alongside operational data. The domain adapter changes. The substrate stays the same.
-
-*The model forgets everything. The platform remembers. The human decides.*
-— Bernard Kavanagh, *Cognitive Foundation series*
