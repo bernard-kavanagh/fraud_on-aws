@@ -28,9 +28,9 @@ if 'session_id' not in st.session_state:
     st.session_state['session_id'] = str(uuid.uuid4())
     create_session(
         st.session_state['session_id'],
+        os.getenv("DEMO_TENANT_ID", DEMO_TENANT_ALPHA),
         user_id="demo_user_ui",
-        metadata={"source": "agent_ui.bootstrap",
-                  "tenant_id": os.getenv("DEMO_TENANT_ID", DEMO_TENANT_ALPHA)},
+        metadata={"source": "agent_ui.bootstrap"},
     )
     st.session_state['messages'] = []
     st.session_state['chain_of_thought'] = []
@@ -221,11 +221,11 @@ if prompt := st.chat_input("Ask about orders, products, or policies..."):
                 entity_session_id = str(uuid.uuid4())
                 create_session(
                     entity_session_id,
+                    tenant_id,
                     user_id=str(entity_ref),
                     metadata={
                         "source": "agent_ui.investigation",
                         "parent_session_id": st.session_state['session_id'],
-                        "tenant_id": tenant_id,
                         "entity_ref": str(entity_ref),
                     },
                 )
@@ -238,7 +238,7 @@ if prompt := st.chat_input("Ask about orders, products, or policies..."):
             else:
                 investigation_session_id = st.session_state['session_id']
 
-            with st.spinner("Running cognitive foundation investigation..."):
+            with st.spinner("Running fact-layer investigation..."):
                 try:
                     result = run_investigation(
                         trigger_text=prompt,

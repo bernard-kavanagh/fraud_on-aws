@@ -51,13 +51,18 @@ from tenancy import resolve_tenant_id, resolve_agent_id, new_session_id
 CONF = 0.90  # above the fact layer's server-side write-control floor (0.85)
 
 
-def _record(tenant_id, subject, value, source, session_id, agent_id, label):
+PRED = fact_layer.FRAUD_PREDICATE  # 'fraud_status' — predicate-specific authority
+
+
+def _record(tenant_id, subject, value, source, session_id, agent_id, label,
+            assessor_type=None, evidence=None):
     print(f"\n--- {label} ---")
     print(f"    subject={subject} value={value!r} source={source}")
     res = fact_layer.record_fact(
-        tenant_id=tenant_id, subject=subject, predicate="status",
+        tenant_id=tenant_id, subject=subject, predicate=PRED,
         value=value, source=source, confidence=CONF,
         agent_id=agent_id, session_id=session_id,
+        assessor_type=assessor_type, evidence=evidence,
     )
     print("    ->", json.dumps(res, default=str))
     return res
@@ -75,53 +80,58 @@ def main():
     run = uuid.uuid4().hex[:8]  # fresh subjects per run so prior state can't interfere
 
     subject_a = fact_layer.entity_subject("fraud", f"clayton-knight-{run}")
-    subject_b = fact_layer.entity_subject("fraud", f"same-authority-{run}")
+    subject_b = fact_layer.entity_subject("fraud", f"rejected-{run}")
+    subject_c = fact_layer.entity_subject("fraud", f"disputed-{run}")
 
     print("=" * 72)
-    print(f"Governed-fact contradiction demo — tenant={tenant_id} run={run}")
+    print(f"Governed-fact adjudication demo (predicate={PRED}) — tenant={tenant_id} run={run}")
     print("=" * 72)
 
-    before_sup = _metric(tenant_id, "superseded_count")
-    before_dis = _metric(tenant_id, "disputed_count")
-    print(f"\nBaseline metrics: superseded_count={before_sup} disputed_count={before_dis}")
-
-    # ---- SCENARIO A: supersede by authority ----
-    print("\n### SCENARIO A — supersede by authority (higher authority wins) ###")
+    # ---- SCENARIO A: higher authority SUPERSEDES (prior retained) ----
+    print("\n### SCENARIO A — higher authority supersedes ###")
     _record(tenant_id, subject_a, "cleared", fact_layer.SOURCE_AGENT,
-            session_id, agent_id,
-            "A1 lower-authority assert (agent_inference, rank 40): 'cleared'")
-    a2 = _record(tenant_id, subject_a, "fraudulent", fact_layer.SOURCE_SYSTEM,
-                 session_id, agent_id,
-                 "A2 higher-authority contradiction (system_of_record, rank 100): 'fraudulent'")
-    a_ok = a2.get("decision") == "supersede" or a2.get("op") == "supersede"
-    print(f"    EXPECT supersede -> {'PASS' if a_ok else 'CHECK'} "
-          f"(decision={a2.get('decision')}, status={a2.get('status')})")
+            session_id, agent_id, "A1 agent_inference (55): 'cleared'",
+            assessor_type="agent")
+    a2 = _record(tenant_id, subject_a, "confirmed", fact_layer.SOURCE_HUMAN,
+                 session_id, agent_id, "A2 human_investigator (100): 'confirmed'",
+                 assessor_type="human",
+                 evidence=[{"evidence_type": "investigation", "evidence_ref": "INV-847"},
+                           {"evidence_type": "chargeback", "evidence_ref": "CB-991"}])
+    print(f"    EXPECT SUPERSEDED -> {'PASS' if a2.get('outcome') == 'SUPERSEDED' else 'CHECK'} "
+          f"(outcome={a2.get('outcome')}, status={a2.get('status')})")
 
-    # ---- SCENARIO B: equal-authority dispute ----
-    print("\n### SCENARIO B — equal-authority contradiction -> disputed ###")
-    _record(tenant_id, subject_b, "cleared", fact_layer.SOURCE_HUMAN,
-            session_id, agent_id,
-            "B1 assert (user_assertion, rank 60): 'cleared'")
-    b2 = _record(tenant_id, subject_b, "fraudulent", fact_layer.SOURCE_HUMAN,
-                 session_id, agent_id,
-                 "B2 equal-authority contradiction (user_assertion, rank 60): 'fraudulent'")
-    b_ok = b2.get("status") == "disputed" or b2.get("decision") == "dispute"
-    print(f"    EXPECT disputed -> {'PASS' if b_ok else 'CHECK'} "
-          f"(decision={b2.get('decision')}, status={b2.get('status')}, "
-          f"competing={b2.get('competing_event_ids')})")
+    # ---- SCENARIO B: LOWER authority contradiction is REJECTED (not disputed) ----
+    print("\n### SCENARIO B — lower-authority contradiction is REJECTED (winner stands) ###")
+    _record(tenant_id, subject_b, "confirmed", fact_layer.SOURCE_FRAUD_REVIEW,
+            session_id, agent_id, "B1 fraud_review (95): 'confirmed'", assessor_type="system")
+    b2 = _record(tenant_id, subject_b, "legitimate", fact_layer.SOURCE_USER,
+                 session_id, agent_id, "B2 user_assertion (20): 'legitimate'",
+                 assessor_type="user")
+    b_ok = b2.get("outcome") == "REJECTED" and b2.get("status") != "disputed"
+    print(f"    EXPECT REJECTED, current stays 'confirmed' -> {'PASS' if b_ok else 'CHECK'} "
+          f"(outcome={b2.get('outcome')}, status={b2.get('status')})")
 
-    # ---- caller-visible metric deltas ----
-    after_sup = _metric(tenant_id, "superseded_count")
-    after_dis = _metric(tenant_id, "disputed_count")
-    print(f"\nMetrics after: superseded_count={after_sup} (was {before_sup}), "
-          f"disputed_count={after_dis} (was {before_dis})")
+    # ---- SCENARIO C: comparable authority -> DISPUTED ----
+    print("\n### SCENARIO C — comparable authority contradiction -> DISPUTED ###")
+    _record(tenant_id, subject_c, "confirmed", fact_layer.SOURCE_HUMAN,
+            session_id, agent_id, "C1 human_investigator (100): 'confirmed'", assessor_type="human")
+    c2 = _record(tenant_id, subject_c, "legitimate", fact_layer.SOURCE_HUMAN,
+                 session_id, agent_id, "C2 human_investigator (100): 'legitimate'", assessor_type="human")
+    print(f"    EXPECT DISPUTED -> {'PASS' if c2.get('status') == 'disputed' else 'CHECK'} "
+          f"(outcome={c2.get('outcome')}, status={c2.get('status')}, "
+          f"competing={c2.get('competing_event_ids')})")
+
+    # ---- explain_fact: WHY does subject_a hold? ----
+    print("\n### explain_fact — why is subject_a what it is? ###")
+    exp = fact_layer.explain_fact(tenant_id=tenant_id, subject=subject_a, predicate=PRED)
+    print(json.dumps(exp, default=str, indent=2)[:1200])
 
     print("\n" + "=" * 72)
-    print("To see the PRIOR claim still in the audit trail (append-only, hash-chained),")
-    print("run sql/rca_lineage.sql against the fact layer's TiDB with:")
-    print(f"    tenant_id = {tenant_id!r}")
-    print(f"    subject   = {subject_a!r}   (Scenario A — should show assert then supersede)")
-    print(f"    subject   = {subject_b!r}   (Scenario B — should show two competing asserts, disputed)")
+    print("Audit trail (append-only, hash-chained): run sql/rca_lineage.sql on the")
+    print("fact layer's TiDB with tenant_id + subject to see every prior claim, e.g.:")
+    print(f"    tenant={tenant_id!r} subject={subject_a!r}  (A: cleared -> SUPERSEDED by confirmed)")
+    print(f"    tenant={tenant_id!r} subject={subject_b!r}  (B: confirmed; legitimate REJECTED, retained)")
+    print(f"    tenant={tenant_id!r} subject={subject_c!r}  (C: two comparable claims -> disputed)")
     print("=" * 72)
 
 

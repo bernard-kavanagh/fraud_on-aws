@@ -4,7 +4,7 @@ Adaptive fraud detection with three-tier memory, substrate-driven model routing,
 
 This repo is one of three implementations of the **cognitive foundation** architecture. The same memory substrate runs [industrial IoT](https://github.com/bernard-kavanagh/ev_charger_anomaly_detection) and [database operations](https://github.com/bernard-kavanagh/tidb-self-healing-db-agent); here it's adapted to e-commerce transactions and sports betting via [`adapters/fraud/`](adapters/fraud/__init__.py) and [`adapters/betting/`](adapters/betting/__init__.py).
 
-> **Governed fact layer (this port).** Semantic memory — confirmed fraud/betting verdicts and their recall — no longer lives in a local `fraud_memory` table. It is now the **AgentCore Governed Fact Layer**, a separately-deployed standalone service (its own Gateway, Cognito JWT auth, Cedar per-tenant isolation, deterministic adjudication, tamper-evident hash-chained audit, server-side embedding). This repo is a **caller** of that service over MCP — see [`fact_layer_client.py`](fact_layer_client.py). Reconciliation is now **live, single-mode** (auto-supersede-by-authority or dispute); deduplication is **retired** in favour of canonical subject keys; every domain table is **tenant-scoped**. See [ARCHITECTURE.md](ARCHITECTURE.md) → *Custodial duties* and [MEMORY_MAINTENANCE_POC.md](MEMORY_MAINTENANCE_POC.md).
+> **Governed fact layer (this port).** Semantic memory — confirmed fraud/betting verdicts and their recall — no longer lives in a local `fraud_memory` table. It is now the **AgentCore Governed Fact Layer**, a separately-deployed, **domain-neutral** standalone service (deterministic adjudication, tamper-evident hash-chained audit, server-side embedding) fronted by an AgentCore Gateway. This repo is a **caller** of that service over MCP — see [`fact_layer_client.py`](fact_layer_client.py). `tenant_id` is the **requested data scope** the caller passes; authorizing that scope is the Gateway governance layer's job (**reference profile**: Cognito JWT + Cedar tenant-equality — not intrinsic to the fact layer; its authoritative contract is the fact layer repo's `ARCHITECTURE.md`). Reconciliation is now **live, single-mode** (auto-supersede-by-authority or dispute); deduplication is **retired** in favour of canonical subject keys; every domain table is **tenant-scoped**. See [ARCHITECTURE.md](ARCHITECTURE.md) → *Custodial duties* and [MEMORY_MAINTENANCE_POC.md](MEMORY_MAINTENANCE_POC.md).
 
 > **For the architecture deep-dive — three-tier memory, custodial duties, the four-step lifecycle, what's shipped vs POC — see [ARCHITECTURE.md](ARCHITECTURE.md).**
 
@@ -49,6 +49,14 @@ The fraud-velocity query and the betting-liability query both use `/*+ read_from
 ### 1. Install dependencies
 
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
+
+python --version
+pip install --upgrade pip
+```
+
+```bash
 pip install -r requirements.txt
 ```
 
@@ -67,10 +75,15 @@ TIDB_HOST=gateway01.<region>.prod.aws.tidbcloud.com
 TIDB_PORT=4000
 TIDB_USER=<your-prefix>.root
 TIDB_PASSWORD=<your-password>
-TIDB_DATABASE=test
+TIDB_DATABASE=agentcore_fraud
 TIDB_SSL_CA=/path/to/isrgrootx1.pem
 ANTHROPIC_API_KEY=sk-ant-...
 ```
+
+> `TIDB_DATABASE` is **this repo's own operational/workflow database**
+> (`agentcore_fraud`). It is **not** the Governed Fact Layer's database — the
+> fact layer is a separate service reached only over MCP (the `FACT_LAYER_*` /
+> `COGNITO_*` settings below) and owns its own database independently.
 
 > Starter and Dedicated clusters use slightly different host patterns — copy whatever the Connect dialog shows.
 
@@ -96,10 +109,25 @@ AWS_REGION=<region>
 
 In the TiDB Cloud console, open your cluster → **SQL Editor** → paste `schema.sql` → run.
 
-This creates all tables in one step. Every **domain** table carries a `tenant_id`
-column (§11 of `schema.sql`); episodic checkpoints live in `agent_reasoning`.
-Semantic memory (confirmed verdicts) is no longer a table here — it's the
-governed fact layer. The schema file is idempotent — safe to re-run.
+`schema.sql` begins with `CREATE DATABASE IF NOT EXISTS agentcore_fraud; USE
+agentcore_fraud;` and creates **only this repo's operational/workflow tables** in
+one step. Every **domain** table carries a `tenant_id` column (§11 of
+`schema.sql`); episodic checkpoints live in `agent_reasoning`. Workflow/episodic
+state is tenant-isolated too: `agent_sessions.tenant_id` is the workflow scope
+(application data scope, **not** principal identity), and prior-investigation
+recall (Tier 4) filters on it so identical entity ids across tenants never
+collide — `chat_history`/`agent_reasoning` inherit that scope through their unique
+`session_id`. The schema file is idempotent — safe to re-run.
+
+> **This must not initialize the Fact Layer.** Semantic memory (confirmed
+> verdicts) is no longer a table here — it lives in the separately-deployed
+> **Governed Fact Layer**, which owns its own database (`entity`, `fact_subject`,
+> `fact_event`, `fact_evidence`, `fact_current`, `predicate_rule`, ...) and is
+> created/migrated by *its own* repo. Running `schema.sql` creates the
+> `agentcore_fraud` database only. Fact Layer evidence rows reference **back** to
+> the operational records created here (e.g. an order/transaction id); neither
+> side copies the other's tables. Both databases may co-reside on the same TiDB
+> cluster with separate ownership.
 
 ### 4. Seed the demo data (per tenant)
 
@@ -195,32 +223,41 @@ python execution/betting_investigation.py "<trigger text>" [entity_ref]
 
 Terminal version of the cognitive-foundation investigation loop. Same lifecycle as the Admin path in Demo 2 (assemble → route → tool-use → slim summary), no UI. Useful for showing raw tool-trace output or scripting investigations against the betting adapter. Pass an entity_ref (customer_id or IP) for the full Tier 4 prior-investigations lookup.
 
-### Demo 5 — Governed reconciliation (live supersede + dispute)
+### Demo 5 — Governed adjudication (Evidence → Assessment → Resolution)
 
-Drives the governed fact layer directly to show single-mode reconciliation:
+The fact layer now models **predicate-specific, versioned authority** and
+distinguishes evidence, assessment, and resolution. Verdicts are written under
+predicate `fraud_status` (which carries per-source authority), with evidence
+references and assessor type. This demo shows all three adjudication outcomes:
 
 ```bash
 DEMO_TENANT_ID=demo-bank-alpha python scenarios/contradiction_demo.py
 ```
 
-- **Scenario A (supersede by authority):** a lower-authority source asserts a
-  verdict; a higher-authority source asserts the opposite on the same subject →
-  `record_fact` **supersedes**. The prior claim stays in the append-only,
-  hash-chained `fact_event` log.
-- **Scenario B (equal-authority dispute):** two equal-authority sources
-  contradict on the same subject → resolves to **`disputed`**, both events
-  retained, no recency tiebreak.
+- **A — SUPERSEDED:** `agent_inference` says `cleared`; `human_investigator`
+  (higher authority for `fraud_status`) says `confirmed` with evidence
+  (INV-847, CB-991) → supersedes; the prior claim stays in the hash-chained log.
+- **B — REJECTED (the key one):** `fraud_review` says `confirmed`; a
+  `user_assertion` says `legitimate`. Because a customer is *low* authority for
+  `fraud_status`, the contradiction is **retained as contrary evidence** and does
+  **not** overturn the confirmation (no auto-dispute).
+- **C — DISPUTED:** two comparable-authority reviewers contradict → `disputed`,
+  both retained, no recency tiebreak.
 
-The script prints each `record_fact` decision and the tenant metric deltas. To
-see the retained prior claim yourself, run the **single-query RCA** in
+It then calls **`explain_fact`** to show *why* the current verdict holds
+(resolution, authoritative source + policy version, supporting vs contrary
+evidence, history). The agent loop also exposes `explain_fact` as a tool, and
+`compound_resolution` now forwards evidence refs + assessor type + an idempotency
+key. To see the full retained lineage, run the **single-query RCA** in
 [`sql/rca_lineage.sql`](sql/rca_lineage.sql) against the fact layer's TiDB with
 the tenant + subject the script prints — it reconstructs the fact's entire
 lineage (first assertion → every supersede/dispute → current truth) in one query.
 
-> **Cross-tenant deny:** point `DEMO_TENANT_ID` at one tenant while authenticating
-> with a token whose `tenant_id` claim is the *other* tenant and the fact layer's
-> Cedar policy denies the call at the Gateway, before TiDB is touched. Requires two
-> distinct tenant identities (see `FACT_LAYER_TENANT_CREDENTIALS`).
+> **Cross-tenant deny (reference profile, ENFORCE):** point `DEMO_TENANT_ID` at one
+> tenant while authenticating with a token whose `tenant_id` claim is the *other*
+> tenant; the reference Cedar tenant-equality policy denies the call at the Gateway
+> (in ENFORCE), before TiDB is touched. Requires two distinct tenant identities
+> (see `FACT_LAYER_TENANT_CREDENTIALS`).
 
 ### Domain read tools on the fact-layer Gateway
 
@@ -253,7 +290,6 @@ The **Clayton Knight investigation** is the strongest single demo — the agent 
 Agent_AG/
 ├── ARCHITECTURE.md          # Architecture deep-dive: theses, custodial duties, lifecycle
 ├── MEMORY_MAINTENANCE_POC.md  # Reconciliation live (single-mode); HITL-queue + Compaction remain POC decisions
-├── VOCABULARY.md            # Canonical cognitive foundation vocabulary
 │
 ├── agent_tools.py           # Substrate: assemble_context (Tier 5 = fact layer),
 │                            #   route_investigation, recall_similar_fraud (fact layer),

@@ -34,7 +34,7 @@ DB_CONFIG = {
     'port': int(os.getenv('TIDB_PORT', 4000)),
     'user': os.getenv('TIDB_USER'),
     'password': os.getenv('TIDB_PASSWORD'),
-    'database': os.getenv('TIDB_DATABASE', 'test'),
+    'database': os.getenv('TIDB_DATABASE', 'agentcore_fraud'),
     'ssl_ca': os.getenv('TIDB_SSL_CA'),
     'autocommit': True
 }
@@ -565,13 +565,17 @@ def assemble_context(entity_ref: str = None, session_id: str = None,
             sources["t2_recent"] = {"tokens": 0, "status": t2_status}
 
         # ----- TIER 3: active investigation checkpoint (substrate) -----
+        # session_id is a unique UUID bound to one tenant, so this is already
+        # single-tenant; the agent_sessions join + tenant_id filter makes the
+        # scope explicit (defense in depth) and consistent with Tier 4.
         if session_id:
             cursor.execute(
-                """SELECT observation, hypothesis, confidence
-                   FROM agent_reasoning
-                   WHERE session_id = %s
-                   ORDER BY created_at DESC LIMIT 1""",
-                (session_id,)
+                """SELECT ar.observation, ar.hypothesis, ar.confidence
+                   FROM agent_reasoning ar
+                   JOIN agent_sessions s ON s.session_id = ar.session_id
+                   WHERE ar.session_id = %s AND s.tenant_id = %s
+                   ORDER BY ar.created_at DESC LIMIT 1""",
+                (session_id, tenant_id)
             )
             row = cursor.fetchone()
             if row:
@@ -1031,63 +1035,98 @@ def compound_resolution(content: str, confidence: float = 0.85,
                         scope: str = "global", entity_ref: str = None,
                         tenant_id: str = None, agent_id: str = None,
                         session_id: str = None, domain: str = "fraud",
-                        verdict: str = None, source: str = None):
+                        verdict: str = None, source: str = None,
+                        evidence: list = None, assessor_type: str = "agent",
+                        human: bool = False):
     """
-    Persist a confirmed verdict to the governed fact layer via record_fact.
+    Persist a confirmed verdict to the governed fact layer via record_fact, as a
+    full Evidence -> Assessment -> Resolution write.
 
-    This is the Thesis 02 line made operational, now through the AgentCore fact
-    layer instead of a local fraud_memory table: the model proposes a resolution;
-    this function maps it onto a governed fact (canonical subject + predicate +
-    value) and calls record_fact. The fact layer embeds server-side, runs the
-    deterministic contradiction test, appends a hash-chained audit event, and
-    upserts current truth — all in one ACID transaction.
+    The model proposes a resolution; this maps it onto a governed fact and calls
+    record_fact, which embeds server-side, runs predicate-specific authority
+    adjudication, appends a hash-chained event, attaches evidence references, and
+    upserts current truth in one ACID transaction.
 
-    Mapping (see fact_layer_client.py subject-key convention):
-      subject    : entity_subject(domain, entity_ref) for an entity verdict;
-                   catalog_subject(domain, content) for a scope='global' canonical
-                   pattern with no live entity.
-      predicate  : FRAUD_PREDICATE / BETTING_PREDICATE (default 'status').
-      value      : the verdict label (scalar) so genuine re-confirmations
-                   corroborate and genuine disagreements (e.g. cleared vs
-                   fraudulent) adjudicate; catalog seeds store `content`.
-      source     : the agent/model identity (SOURCE_AGENT) by default, or a
-                   human-reviewer identity (SOURCE_HUMAN) for manual resolutions.
-      confidence : passed through; the write-control floor is enforced
-                   SERVER-SIDE by record_fact (removed from here — task 5).
+    Mapping (see fact_layer_client.py):
+      subject       : entity_subject(domain, entity_ref) for an entity verdict;
+                      catalog_subject(domain, content) for a scope='global' pattern.
+      predicate     : FRAUD_PREDICATE / BETTING_PREDICATE (fraud_status / liability_status,
+                      which carry predicate-specific authority in the fact layer).
+      value         : the scalar verdict label so agreements corroborate and
+                      disagreements adjudicate (cleared vs confirmed, etc).
+      source        : agent identity by default (agent_inference); a human review
+                      uses human_investigator (top authority) when human=True or
+                      source is given.
+      evidence      : references back to the fraud domain (transaction_id, alert_id,
+                      investigation_id, ...) — {evidence_type, evidence_ref, ...}.
+      context_summary: the banded description -> folded into the semantic embedding.
+      confidence    : passed through; write-control floor enforced SERVER-SIDE.
+      idempotency_key: derived so a retried resolution does not double-write.
     """
     tenant_id = resolve_tenant_id(tenant_id)
     agent_id = resolve_agent_id(agent_id)
     fl = _fact_layer()
 
     predicate = fl.FRAUD_PREDICATE if domain == "fraud" else fl.BETTING_PREDICATE
+    entity_type = None
     if entity_ref:
         subject = fl.entity_subject(domain, entity_ref)
         value = verdict or _DEFAULT_VERDICT.get(domain, "confirmed")
+        # Derive a canonical entity_type from the subject shape (customer/ip/...).
+        entity_type = subject.split(":", 2)[1] if subject.count(":") >= 2 else "entity"
     else:
-        # scope='global' canonical pattern — signature-scoped catalog subject,
-        # value carries the banded description (distinct subject, no corroboration
-        # concern) so recall surfaces the pattern text.
         subject = fl.catalog_subject(domain, content)
         value = verdict or content
+        entity_type = "pattern"
 
-    src = source or fl.SOURCE_AGENT
+    # A human resolution outranks the agent's inference for fraud_status.
+    src = source or (fl.SOURCE_HUMAN if human else fl.SOURCE_AGENT)
+    resolved_assessor = "human" if (human or src == fl.SOURCE_HUMAN) else assessor_type
+    # Stable idempotency key so a retried identical resolution replays, not doubles.
+    idem = f"{session_id or 'nosession'}:{subject}:{value}"
+
     try:
         res = fl.record_fact(
             tenant_id=tenant_id, subject=subject, predicate=predicate,
             value=value, source=src, confidence=confidence,
             agent_id=agent_id, session_id=session_id,
+            entity_type=entity_type, canonical_key=(entity_ref or subject),
+            assessor_type=resolved_assessor, evidence=evidence,
+            context_summary=content, idempotency_key=idem,
         )
         if res.get("error"):
             return f"❌ record_fact rejected: {res['error']}"
+        replay = " (idempotent replay)" if res.get("idempotent_replay") else ""
         return (
             f"✅ fact recorded — subject={subject} predicate={predicate} "
-            f"decision={res.get('decision')} status={res.get('status')} "
-            f"event_id={res.get('event_id')}"
+            f"outcome={res.get('outcome')} status={res.get('status')} "
+            f"policy={res.get('policy_version')} event_id={res.get('event_id')}"
+            f"{replay}"
             + (f" competing={res['competing_event_ids']}"
                if res.get("competing_event_ids") else "")
         )
     except Exception as e:
         return f"❌ Compound Error (fact layer): {e}"
+
+
+def explain_fact(entity_ref: str, domain: str = "fraud", tenant_id: str = None):
+    """Ask the governed fact layer WHY the current verdict for an entity holds.
+
+    Returns the full provenance (resolution, authority, supporting vs contrary
+    evidence, assessments, history) so the agent can answer "why do we believe
+    this?" rather than just restating a verdict. Read-only, tenant-scoped.
+    """
+    tenant_id = resolve_tenant_id(tenant_id)
+    fl = _fact_layer()
+    predicate = fl.FRAUD_PREDICATE if domain == "fraud" else fl.BETTING_PREDICATE
+    subject = fl.entity_subject(domain, entity_ref)
+    try:
+        res = fl.explain_fact(tenant_id=tenant_id, subject=subject, predicate=predicate)
+        if res.get("error"):
+            return f"No governed fact for {subject}/{predicate}: {res['error']}"
+        return json.dumps(res, default=str)
+    except Exception as e:
+        return f"❌ explain_fact error (fact layer): {e}"
 
 
 def seed_fraud_memory_from_adapter(adapter=None, tenant_id: str = None,
@@ -1159,15 +1198,25 @@ def write_reasoning_checkpoint(session_id: str, observation: str, hypothesis: st
 
 
 # --- TOOL 5: THE STATE MACHINE (Memory) ---
-def create_session(session_id: str, user_id: str = "guest", metadata: dict = None):
+def create_session(session_id: str, tenant_id: str, user_id: str = "guest",
+                   metadata: dict = None):
     """
     Initializes a new session in TiDB to satisfy Foreign Key constraints.
+
+    tenant_id is REQUIRED: it is the workflow data scope every downstream
+    episodic/workflow read filters on (Tier 3 active checkpoint, Tier 4 prior
+    investigations, the slim-summary read). It is application DATA SCOPE — NOT the
+    authenticated principal identity — and it must be threaded in from the
+    already-established investigation tenant, never inferred from a customer id.
+    An empty/blank tenant fails closed (ValueError) rather than writing an
+    un-scoped session that Tier 4 could later leak across tenants.
 
     Convention for cognitive-foundation investigations:
       - Set user_id = str(entity_ref) (customer_id or ip_address) when starting
         an entity-focused investigation. Tier 4 in assemble_context joins on
-        agent_sessions.user_id; sessions created with 'guest' or a UI-level
-        label will silently return no prior investigations for that entity.
+        agent_sessions.user_id AND agent_sessions.tenant_id; sessions created with
+        'guest' or a UI-level label will silently return no prior investigations
+        for that entity.
 
     Audit-trail conventions (metadata JSON):
       - source              : where the session was created from. Examples:
@@ -1185,21 +1234,30 @@ def create_session(session_id: str, user_id: str = "guest", metadata: dict = Non
     Both fields are metadata-only (no schema change). Elevate to columns if
     you want indexed lineage queries; the data is already there.
     """
+    # Fail closed: workflow context must never be created un-scoped.
+    if not tenant_id or not str(tenant_id).strip():
+        raise ValueError(
+            "create_session requires an explicit non-empty tenant_id (workflow "
+            "data scope). Refusing to create an un-scoped session — Tier 4 prior-"
+            "investigation recall filters on it and would otherwise cross tenants."
+        )
+    tenant_id = str(tenant_id).strip()
+
     conn = None
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
 
         sql = """
-            INSERT INTO agent_sessions (session_id, user_id, metadata)
-            VALUES (%s, %s, %s)
+            INSERT INTO agent_sessions (session_id, tenant_id, user_id, metadata)
+            VALUES (%s, %s, %s, %s)
         """
         # Honest metadata. Caller-supplied; we don't fabricate a source.
         meta = json.dumps(metadata or {})
 
-        cursor.execute(sql, (session_id, user_id, meta))
+        cursor.execute(sql, (session_id, tenant_id, user_id, meta))
         conn.commit()
-        print(f"✅ Session {session_id} created.")
+        print(f"✅ Session {session_id} created (tenant={tenant_id}).")
 
     except Error as e:
         print(f"❌ Session Creation Failed: {e}")

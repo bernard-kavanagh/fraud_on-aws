@@ -1,22 +1,45 @@
-# Cognitive Foundation — Demo Directive
+# Fraud Investigation — Demo Directive
 
-> Operating directive for the TiDB cognitive-foundation fraud demo.
+> Operating directive for the TiDB + AgentCore fraud-investigation demo.
 > Read by: AI assistants working on this repo, sales engineers prepping the
-> demo, and the agent itself (Thesis 07 — procedural memory: how to act on
-> what it knows).
+> demo, and the agent itself (procedural memory: how to act on what it knows).
 >
 > Canonical runtime instructions live in `cognitive_loop.SYSTEM_PROMPT_TEMPLATE`
-> and the per-adapter `SCHEMA_HINT` constants. This directive supersedes the
-> pre-cognitive-foundation "Analytical RAG" framing that the same file used to
-> carry.
+> and the per-adapter `SCHEMA_HINT` constants. The governed Fact Layer's
+> authoritative contract lives in **Repo 1** (`../aws/ARCHITECTURE.md`) — this
+> directive cross-references it rather than restating it.
+>
+> This revision re-orders the story. The center of the demo is now **a real
+> fraud investigation that reaches an explainable conclusion** — not four
+> database writes and not the A/B/C governance proof. The compounding-memory
+> and governance material is preserved but repositioned as supporting acts.
 
 ---
 
 ## Goal
 
-Demonstrate that the cognitive foundation **compounds fraud intelligence on a single TiDB cluster** — every confirmed investigation becomes a routable, recallable pattern that makes the next investigation cheaper and more accurate, with no retraining and no pipeline.
+Show the buyer three things, in this order of emphasis:
 
-The demo's job is to show the buyer that their stated pain — scale, retrieval, data movement, branching — is what this architecture eliminates.
+1. **Primary — an explainable investigation.** A suspicious transaction triggers
+   an investigation that combines *four conceptually-distinct* sources —
+   operational evidence, governed institutional context, confirmed historical
+   precedent, and authoritative documentation — into a conclusion the agent can
+   **explain**: why this verdict holds, on whose authority, against what contrary
+   evidence.
+
+2. **Secondary — compounding precedent.** A confirmed investigation can create
+   reusable institutional/semantic precedent that *can* make a subsequent
+   similar investigation more efficient. This is a benefit we demonstrate the
+   mechanism for; the magnitude is a benchmark opportunity, not an established
+   fact (see **Claims audit**).
+
+3. **Governance proof (short).** The Fact Layer independently authorizes the
+   *requested data scope* of every call. This is a ~2-minute architectural aside
+   — an important property, not the business demo.
+
+The demo's job is still to show the buyer that their stated pain — scale,
+retrieval, data movement, branching — is what this architecture addresses. But
+the "watch this" moment is now **`explain_fact`**, not the write-back tab.
 
 ---
 
@@ -24,10 +47,15 @@ The demo's job is to show the buyer that their stated pain — scale, retrieval,
 
 Two buying centres are usually present in one meeting:
 
-1. **Fraud Operations** (Economic Crime Hub, Fraud Prevention CoE). Live the pain daily. Care about analyst Mean-Time-to-Decision and false-positive rate.
-2. **Data & Analytics**. Own the infrastructure decision. Care about scale, data-movement cost, and consolidation of the stack.
+1. **Fraud Operations** (Economic Crime Hub, Fraud Prevention CoE). Live the pain
+   daily. Care about analyst Mean-Time-to-Decision, false-positive rate, and
+   whether a decision is *defensible*.
+2. **Data & Analytics**. Own the infrastructure decision. Care about scale,
+   data-movement cost, and consolidation of the stack.
 
-The demo must speak to both simultaneously — the cognitive-foundation story is that **one cluster eliminates both classes of pain** (the data-movement substrate for one buyer, the assembled-context investigation surface for the other).
+Speak to both: the investigation story lands for Fraud Ops (an explainable,
+briefed decision); the substrate/consolidation story lands for Data & Analytics
+(operational + analytical + memory on one cluster, governed context alongside).
 
 ---
 
@@ -36,116 +64,294 @@ The demo must speak to both simultaneously — the cognitive-foundation story is
 | Their language | What it means | What the demo answers |
 |---|---|---|
 | 15–17M transactions, 10M wps, ~100M events | Tier-1 scale; current stack is buckling | HTAP dashboard — TiKV writes + TiFlash queries on same cluster, no ETL |
-| Retrieval is hard — dataset is huge, need device/IP/history together | The **Memory Wall**, in their language | `assemble_context()` — five tiers, one SQL pass, <50ms, zero LLM calls |
-| "How do you handle data movement?" | Movement is their latency; latency is their fraud | One connection string. No pipeline. Same data, two engines. |
-| Need branching — payment journey, filter 10% for analysis | Want event-chain context, not just event-point | `agent_reasoning` checkpoints + Tier 4 prior investigations |
+| Retrieval is hard — dataset is huge, need device/IP/history together | The **Memory Wall**, in their language | `assemble_context()` — operational tiers in one SQL pass, plus governed Tier-5 recall |
+| "How do you handle data movement?" | Movement is their latency; latency is their fraud | One connection string for operational + analytical + episodic memory. No ETL pipeline. |
+| Need branching — payment journey, filter 10% for analysis | Want event-chain context, not just event-point | `agent_reasoning` checkpoints + Tier-4 prior investigations |
 | Mentioned Flink | They've evaluated streaming layers | TiDB is the memory substrate underneath Flink — complementary, not competitive |
+| "Can you defend a decision to an auditor / regulator?" | Explainability is a procurement gate | `explain_fact` — current resolution, winning authority, supporting vs contrary evidence, full history |
 
 ---
 
-## The three business-value metrics
+## The responsibility model (read this before the flow)
 
-These map 1:1 to what the buyer said.
+The single most important correction in this revision: **the four sources the
+agent draws on are conceptually distinct systems.** Do not imply they all live
+in the Fact Layer, and do not imply they share one transaction boundary. They do
+not.
 
-### 1. Detection latency: hours → milliseconds
-- **Their current flow:** OLTP → batch ETL → historical store → fraud rules → alert.
-- **The bottleneck:** the ETL.
-- **The cognitive-foundation answer:** TiFlash is a columnar replica of TiKV kept in sync in real-time. Rules run on live operational data through the columnar engine. Detection happens **on the same write path, not after it.**
-- **The line:** *"We catch it on swipe, not the next day."*
-
-### 2. Mean Time to Decision: stale queues → instant context
-- **Their current flow:** analyst opens a queue item, retrieves IP history, device history, account history, prior patterns, payment journey — each from a different system. Five-system tax.
-- **The cognitive-foundation answer:** `assemble_context()` builds the full picture in ~50ms with **zero LLM calls**. Analyst arrives at the decision with a pre-assembled brief.
-- **The line:** *"Your analysts open a queue item and spend the first five minutes pulling context from four different systems. We've eliminated those five minutes."*
-
-### 3. False positive rate: noise → precision
-- **At buyer scale,** even 1% FPR = 150,000–170,000 legitimate transactions wrongly blocked per day. Customer friction, complaint volume, frozen revenue.
-- **The cognitive-foundation answer:** the agent cross-references device fingerprint + account history + semantic memory before flagging. Multi-variable context = precise signal.
-- **The line:** *"The agent doesn't just fire on velocity — it fires on velocity AND a matching pattern in fraud_memory AND a confidence-graded prior investigation."*
-
----
-
-## The cognitive-foundation lifecycle (powers everything below)
-
-Four stages. Canonical. Implemented end-to-end in this repo.
-
-1. **ASSEMBLE** — `assemble_context(entity_ref, session_id, trigger_text, adapter)` builds a 5-tier prompt under a 3,600-token budget. Pure SQL. Zero LLM calls. ~50ms.
-   - T1 entity profile (customer + risk band)
-   - T2 recent activity (orders/bets)
-   - T3 active investigation (latest `agent_reasoning` row)
-   - T4 prior investigations (entity-scoped session history)
-   - T5 semantic memory (fraud_memory via vector similarity, capped at 500 tokens)
-
-2. **ROUTE** — `route_investigation(vector_matches, confidence_gate, similarity_gate)` scans Tier 5 matches. If **any** row passes both gates → Haiku/3-round shortcut. Otherwise → Sonnet/15-round explore. Per-adapter gates (fraud 0.45 / betting 0.55) reflect calibrated trigger language per domain.
-
-3. **LOOP** — cached system prompt (`cache_control: ephemeral`) + tool-use. The model picks tools from a small surface: `execute_sql`, `vector_search`, `recall_similar_fraud`, `flag_order`, `write_reasoning_checkpoint`, `compound_resolution`. Must write a structured checkpoint before ending.
-
-4. **SUMMARY** — `_slim_summary()` reads the latest `agent_reasoning` row and produces a 3-paragraph report from structured fields (observation / hypothesis / evidence / confidence / resolution). **Does NOT replay the loop.** Fallback synthesises a 0.50-confidence checkpoint from `tool_trace` if the agent didn't write one.
-
----
-
-## The five custodial duties
-
-What turns a vector table into actual memory (Thesis 03).
-
-| Duty | Live? | Where |
+| Concern | What it holds | Where it lives (this repo) |
 |---|---|---|
-| 1. Write Control | ✅ | `compound_resolution()` rejects writes below `WRITE_CONTROL_MIN_CONFIDENCE` (0.85). |
-| 2. Deduplication | ✅ | `consolidate_fraud_memory()`. Merges cosine-distance < 0.15. Sets `superseded_by`. |
-| 3. Reconciliation | 🟡 stub | `reconcile_fraud_memory()`. Spec ready, implementation next. |
-| 4. Confidence Decay | 🟡 stub | `decay_fraud_memory(half_life_days)`. |
-| 5. Compaction | 🟡 stub | `compact_fraud_memory()`. |
+| **Fraud application / operational domain** | transaction / customer / device / IP data; alerts and anomaly signals; investigation business context; operational write-back (e.g. flagging an order) | Local TiDB: `orders`, `customers`, etc.; `flag_order` write-back |
+| **Workflow / episodic memory** | `agent_reasoning`; sessions/checkpoints; investigation process state | Local TiDB: `agent_reasoning`, `agent_sessions` |
+| **Semantic / pattern memory** | similarity recall; reusable candidate precedent; useful *candidate* signal — **not by itself the authority mechanism for institutional truth** | Governed Fact Layer via `vector_search` (Tier 5) — server-side embedded, tenant-scoped |
+| **Governed Fact Layer** | durable governed assertions/resolutions; history / disagreement; provenance / authority; `get_fact`, `get_fact_history`, `list_disputes`, `explain_fact`, `record_fact`. **Domain-neutral** even though this deployment seeds fraud predicates (`fraud_status`, `liability_status`) | Separately-deployed AgentCore service (**Repo 1**), reached over its Gateway via `fact_layer_client.py` |
+| **Authoritative documentation** | official policy/docs source | Local TiDB: `sales_knowledge` (policies), reached on-demand via `vector_search(target_table='sales_knowledge')` — separate from operational records and governed facts |
 
-On the demo: only one duty needs to be visible (dedup). The other four are named in the directive and the README so the architecture is grep-able even where it's not yet running.
+Key distinctions to keep straight (from `../aws/ARCHITECTURE.md`):
 
----
-
-## Demo flow (15 minutes)
-
-### 1. Fraud Dashboard — 2 min
-Run `live_pulse.py` (writes) and `fraud_dashboard.py` (TiFlash query) side by side. Show writes every 500ms, the velocity-anomaly query running concurrently on the same cluster.
-
-> **What to say:** *"Same cluster, same data, no ETL. Scale this to your write volume — the architecture doesn't change. This is the data-movement answer."*
-
-### 2. Admin Investigation — "any fraudulent orders?" — 8 min
-Open `agent_ui.py`, role = Admin. Use a **known-good trigger** (see README "Known-good demo triggers" section):
-
-- `investigate suspicious orders from IP 185.15.54.22` (velocity burst — 5 pending orders seeded)
-- `investigate customer 4 for chargeback fraud` (Clayton Knight — the agent finds *delivery-confirmed-before-signup*, an anomaly check it invents itself)
-
-Walk through the sidebar in real-time:
-- **Context assembled** — *"Budget 107/3600 tokens. Zero LLM calls. Pure SQL."*
-- **Routing decision** — *"Code, not the model, decided which model runs. Sonnet on cold, Haiku on warm. The substrate picks."*
-- **Tool calls** — SQL queries, vector recall, write-back. *"Notice the model never asks for schema — the adapter ships it."*
-- **Structured checkpoint** — *"Episodic memory. Not a transcript. Observation, hypothesis, evidence, confidence, resolution."*
-- **Slim summary** — *"The summary reads the checkpoint, not the loop. ~37% fewer tokens, zero empty reports."*
-
-### 3. Run it again — 2 min
-Same trigger, second run. This time it shortcuts.
-
-> **What to say:** *"First investigation: Sonnet, 15 rounds. Second: Haiku, 3 rounds. Same quality report. The system learned. The substrate is why both happen in the same place."*
-
-This is the warm-up curve from AGENT_LIFECYCLE.md §4 made visible in 30 seconds.
-
-### 4. Dedup duty — 1 min
-Click "🧹 Run dedup (custodial duty)" in the sidebar.
-
-> **What to say:** *"Memory maintenance is deterministic and auditable. Every merge writes a `superseded_by` link. Nothing decays silently. This is one of five duties — reconciliation and decay run on the same shape."*
-
-### 5. Close — 2 min
-Open `.env`. Show the single connection string.
-
-> **What to say:** *"No Pinecone. No Redis. No separate warehouse. One TiDB cluster. One bill. The fraud intelligence compounds here."*
+- **business context ≠ authenticated principal.** Acme/John/TX123 is business
+  context; the authenticated principal is the Cognito identity making the call.
+- **subject/customer ≠ tenant.** John is a subject; Acme is the tenant scope.
+- **`tenant_id` = requested data scope**, sent as a tool argument — *not* identity.
+- **scope filter ≠ authorization.** Filtering rows by `tenant_id` is not the same
+  as authorizing the request; the Gateway authorizes the requested scope
+  independently.
+- **Fact Layer = generic / domain-neutral.** Fraud predicates are
+  deployment-seeded *vocabulary*, not a change to the mechanism.
+- **AgentCore governance and Fact Layer adjudication are separate concerns.**
+  One decides *may this caller request this scope*; the other decides *what is
+  currently true and why*.
+- **Operational DB remains the system of record for transactions.** The Fact
+  Layer is the governed record of *what the agentic organization currently
+  resolves to be true, and why*.
 
 ---
 
-## Database UI — write-back proof moments
+## Canonical demo narrative
 
-Open your TiDB SQL editor (or any MySQL-compatible UI) in a split-screen next
-to the agent UI. Have these four queries pre-loaded in tabs. They are the
-proof artefacts behind every claim the demo makes.
+**Business context:** Tenant **Acme** · Customer **John** · Transaction **TX123**.
 
-### Tab 1 — `orders` (the write-back surface)
+> Naming note: "Acme / John / TX123" is the narrative framing. The repo today
+> ships concrete entities (`demo-bank-alpha` tenant; customer 4 "Clayton Knight";
+> IP `185.15.54.22`). Mapping the Acme/John/TX123 names onto deterministic seed
+> data is a **SEED** gap — see *Demo implementation gaps*.
+
+The story: a suspicious transaction is detected for John at Acme. The
+orchestration layer conceptually obtains, from **four distinct sources**:
+
+1. **John's operational transaction evidence/history** — from the operational DB.
+2. **John's relevant governed facts/history** — from the Fact Layer, scoped to Acme.
+3. **Acme's confirmed historical fraud precedent/patterns** — semantic recall from
+   the Fact Layer (tenant-wide), surfacing reusable *candidate* precedent.
+4. **Authoritative official policy/documentation** — from the docs source
+   (`sales_knowledge`).
+
+The agent combines these into one investigation and reaches an explainable
+conclusion. **Keep the sources conceptually distinct** when you narrate — three
+of them are three different systems.
+
+---
+
+## Core demo sequence (~15 min; a 3–5 min executive slice is called out below)
+
+### Beat 1 — Suspicious transaction / investigation context (2 min)
+
+Establish Acme + John + TX123. Show the operational trigger and the relevant
+transaction evidence.
+
+- Optionally run `execution/fraud_dashboard.py` (TiFlash) next to a writer to
+  show the HTAP substrate detecting velocity on the live write path.
+- Open `execution/agent_ui.py`, select tenant **Acme** (`demo-bank-alpha`), and
+  use a known-good trigger from the README (e.g. `investigate suspicious orders
+  from IP 185.15.54.22`, or `investigate customer 4 for chargeback fraud`).
+
+> **What to say:** *"A transaction just tripped an anomaly signal. Here's the
+> operational evidence an analyst would start from — same cluster the write
+> landed on, no ETL, no lag."*
+
+### Beat 2 — Assemble investigation context (2 min)
+
+`assemble_context()` builds the agent's prompt before the model runs.
+
+- **What it supplies today (grounded):**
+  - **Tiers 1, 2, 4 — operational evidence:** entity profile, recent activity,
+    prior investigations. Adapter-delegated, tenant-scoped, **pure SQL, zero LLM
+    calls** — this is the fast local path.
+  - **Tier 3 — active checkpoint:** substrate-generic session state from
+    `agent_reasoning`.
+  - **Tier 5 — governed semantic recall:** `fact_layer_client.vector_search`,
+    tenant-scoped, **embedded server-side on the Fact Layer** — reusable
+    candidate precedent for Acme.
+
+- **What it does *not* supply today (do not claim otherwise):**
+  - `assemble_context()` does **not** call `get_fact` / `get_fact_history` /
+    `explain_fact` — Tier 5 is *recall*, not the governed-fact read path.
+  - `assemble_context()` does **not** pull official documentation — the docs
+    source is a *separate* on-demand `vector_search('sales_knowledge')` tool the
+    agent can call during the loop, not part of assembly. Wiring John-specific
+    governed facts and official docs into the assembled brief is a **WIRE** gap.
+
+> **Latency wording (corrected):** the "~50 ms, pure SQL, zero LLM calls" claim
+> holds for the **local operational tiers (1–4)** only. **Tier 5 is a remote,
+> governed, server-side-embedded call** over MCP — it carries network + embedding
+> latency and is *not* local SQL. Do not state a single sub-50 ms figure for the
+> whole assembly. Whole-assembly latency is a **benchmark opportunity**, not a
+> measured claim.
+
+> **What to say:** *"Before the model sees anything, the platform assembles the
+> brief: John's operational history in one local SQL pass, plus governed
+> precedent for Acme recalled from the Fact Layer. The model doesn't decide what
+> to remember — the platform decides for it."*
+
+### Beat 3 — Investigate (3 min)
+
+The model reasons over the assembled evidence and picks tools from a small
+surface: `vector_search`, `recall_similar_fraud`, `flag_order`,
+`write_reasoning_checkpoint`, `compound_resolution`, `explain_fact`.
+
+Preserve the existing tool-call / checkpoint / write-back demonstration:
+
+- **Routing** decided which model runs (code, not the model): a Tier-5 match
+  passing both gates → Haiku/3-round shortcut; otherwise → Sonnet/15-round
+  explore.
+- **Tool calls** — SQL-free governed reads/recall and the write-back.
+  *"The model never asks for schema — the adapter ships it in the prompt."*
+- **Structured checkpoint** — `write_reasoning_checkpoint` writes episodic memory
+  (observation / hypothesis / evidence / confidence / resolution), not a
+  transcript.
+- **Operational write-back** — `flag_order` persists the agent's justification
+  back onto the operational row.
+
+> **What to say:** *"The agent investigates, cites its evidence, writes a
+> structured checkpoint, and flags the order — all on the same cluster that holds
+> the transaction."*
+
+### Beat 4 — Controlled disagreement (2 min)
+
+Demonstrate two conflicting assessments (e.g. FRAUD vs NOT_FRAUD) and show that
+**authority adjudicates** — establishing a *current governed resolution* while
+**preserving the contrary assertion in history** rather than silently
+overwriting it.
+
+- This is LIVE today via `scenarios/contradiction_demo.py` (a CLI scenario, not
+  the UI investigation flow). It shows the Fact Layer's `record_fact`
+  adjudication:
+  - **higher authority supersedes** (prior event retained, hash-chained);
+  - **lower-authority contradiction is rejected** (winner stands, contrary
+    retained as evidence);
+  - **comparable authority → `disputed`** (both retained, no recency tiebreak).
+
+> **Target beat / gap:** wiring this *exact* FRAUD-vs-NOT_FRAUD disagreement onto
+> the canonical John/TX123 entity inside the investigation UI is a **WIRE+SEED**
+> gap. Today it runs as a deterministic-per-run CLI scenario. Describe it as the
+> target beat and demonstrate it via the CLI script if the UI wiring isn't ready.
+
+> **What to say:** *"The model can be wrong. A human investigator can disagree.
+> The Fact Layer doesn't pick recency — it picks authority, and it keeps the
+> loser on the record."*
+
+### Beat 5 — Explain the resolution — **the money shot** (3 min)
+
+Call `explain_fact` and show **why the current resolution exists** — resolution,
+winning authority + policy version, supporting vs contrary evidence, assessments,
+superseded/disputed prior assertions, and outcome history — to the extent the
+Fact Layer actually returns them.
+
+- The agent has `explain_fact` as a wired tool; `scenarios/contradiction_demo.py`
+  also calls it directly and prints the provenance payload.
+- **This is the principal "watch this" moment.** Not four database writes — *one
+  question answered with governed provenance.*
+
+> **UI gap:** the UI surfaces `explain_fact` output only as a raw tool-result
+> line in the chain-of-thought. A formatted provenance/authority/history panel is
+> a **WIRE** gap (tool exists; presentation missing). For the strongest version
+> today, run `explain_fact` via the CLI scenario and read the structured payload.
+
+> **What to say:** *"This is the difference between an alert and a decision. The
+> platform can tell you what it believes about John, why, on whose authority, and
+> what evidence argued the other way — in one call."*
+
+### Governance aside (~2 min — keep it short)
+
+> *"Every Fact Layer call declares the data scope it is requesting. In this
+> investigation, that scope is Acme."*
+
+Then show the reference authorization profile (A/B/C):
+
+| # | Caller identity | Requested scope | Cedar decision |
+|---|---|---|---|
+| A | Acme identity | Acme | **ALLOW** |
+| B | Acme identity | Globex | **DENY** |
+| C | identity without a tenant claim | Acme | **DENY** |
+
+Critical wording (do not paraphrase loosely):
+
+- `tenant_id` is **requested data scope, not identity**.
+- **tenant filtering is not authorization** — the governance layer authorizes the
+  requested scope independently of any row filter.
+- **Cognito + Cedar tenant-equality is the current *reference profile*,** not a
+  universal Fact Layer requirement. The Fact Layer is domain- and
+  auth-mechanism-neutral (`../aws/ARCHITECTURE.md`).
+- The current deployment is **LOG_ONLY**. Therefore describe A/B/C as **observed
+  Cedar policy *decisions*** — **not** as proof that a DENY currently *blocks*
+  target/DB execution. ENFORCE is the production posture; LOG_ONLY records the
+  decision without blocking.
+- **L0 and L4 are proven; L2/L3 are supported by controlled inference**, not by
+  directly-exposed per-condition telemetry (see Repo 1).
+
+> **Gap:** there is no A/B/C ALLOW/DENY *panel* in the demo UI today. The
+> cross-tenant DENY is demonstrable by configuration (point `DEMO_TENANT_ID` at
+> one tenant while authenticating with a token whose claim is another), and the
+> UI tenant selector shows isolation. A presentable A/B/C view is a **BUILD** gap.
+
+> **What to say:** *"tenant_id is a requested scope, not a login. The governance
+> layer decides whether this caller may ask for Acme's data at all — separately
+> from what the Fact Layer then decides is true. Today that's running in
+> log-only, so what you're seeing is the policy decision being recorded."*
+
+### Compounding intelligence / second-run benefit (2 min — secondary)
+
+Preserve the existing semantic-recall + routing demonstration, clearly
+distinguished from governed institutional facts.
+
+- **Semantic/pattern memory ≠ governed institutional facts.** Tier-5 recall
+  surfaces reusable *candidate* precedent; it does not by itself establish
+  institutional truth — adjudication does.
+- If the implementation demonstrably routes a *warm* investigation differently
+  (shortcut vs explore), retain that demonstration: first run explores; a second
+  run against seeded/confirmed precedent can route to the shortcut path.
+
+> **Do not state as fact:** "same quality", "more accurate", "cheaper", exact
+> latency, exact token reduction (e.g. "~37% fewer tokens"), or other quantitative
+> benefits — **unless the repo contains measured evidence** (it does not, today).
+> Mark these as **hypotheses / benchmark opportunities**. What *is* grounded: the
+> routing mechanism (code-driven model selection) and the recall mechanism exist
+> and run.
+
+> **What to say:** *"A confirmed verdict becomes recallable precedent for the next
+> similar case at Acme. Whether that makes the next run cheaper or faster is
+> exactly the kind of thing we'd measure with you in a POC — the mechanism is
+> here; the number is yours to establish."*
+
+### Close (2 min)
+
+Connect the consolidation story to the broader architecture — **without**
+claiming every concern is one transaction boundary.
+
+- **One TiDB cluster** holds the operational/analytical fraud data (TiKV +
+  TiFlash), the workflow/history (`agent_reasoning`, `agent_sessions`), and the
+  authoritative docs (`sales_knowledge`).
+- **The governed Fact Layer is a separate, governed service** (Repo 1) reached
+  over its Gateway — it is *not* in the operational transaction boundary. That
+  separation is deliberate: governed institutional truth is adjudicated and
+  audited independently of the operational system of record.
+- **AgentCore governs tool access** to both.
+
+> **What to say (corrected):** *"Operational data, analytics, workflow memory,
+> and policy docs consolidate onto one cluster — one connection string, no ETL.
+> Governed institutional truth lives one step out, in a service whose whole job is
+> to adjudicate and audit what's true. Two boundaries, on purpose — not five
+> bolted-together stores."*
+
+---
+
+### The 3–5 minute executive vertical slice
+
+If you only have five minutes, run: **Beat 1 (context) → Beat 2 (assemble) →
+Beat 3 (investigate + flag) → Beat 5 (`explain_fact` money shot)**, with the
+governance aside as a single sentence. Beat 4 (disagreement) and the
+compounding/second-run act are the extended cut. See *Demo implementation gaps*
+for what must be deterministic to make this slice reliable.
+
+---
+
+## Database UI — supporting proof (not the money shot)
+
+Keep the database tabs as **technical proof / supporting material**. They are the
+receipts behind the investigation, not the headline sequence. Open a
+MySQL-compatible UI split-screen next to the agent UI.
+
+### Tab 1 — `orders` (the operational write-back surface)
 
 ```sql
 SELECT order_id, customer_id, amount, ip_address, country,
@@ -157,15 +363,12 @@ ORDER BY order_date DESC
 LIMIT 25;
 ```
 
-**Proof moment:** Before launching the investigation, run this query — show
-the `pending` rows. After the agent fires `flag_order`, refresh. A row that
-was `pending` is now `flagged` with the agent's natural-language justification
-in `flagged_reason`.
+**Proof moment:** run before the investigation to show `pending` rows; refresh
+after `flag_order` fires to show the row now `flagged` with the agent's
+justification in `flagged_reason`.
 
-> *"One refresh, one row, the whole 'agent writes back to operational data'
-> story. The flagged_reason field is the agent's own reasoning persisted
-> back to the same row that holds the transaction. No separate alert pipeline,
-> no enrichment lag — same row, same cluster, ACID."*
+> *"The agent's reasoning persisted back onto the same operational row that holds
+> the transaction — same cluster, ACID, no separate alert pipeline."*
 
 ### Tab 2 — `agent_reasoning` (episodic memory, the audit trail)
 
@@ -182,54 +385,35 @@ ORDER BY created_at DESC
 LIMIT 10;
 ```
 
-**Proof moment:** Switch here after the investigation completes. The newest
-row is the structured checkpoint the slim-summary call reads from.
+**Proof moment:** the newest row is the structured checkpoint the slim-summary
+call reads from.
 
-> *"The summary report you just read wasn't built by replaying the agent's
-> conversation — it was built from this one row. Five structured fields:
-> observation, hypothesis, evidence_refs, confidence, resolution. EU AI Act
-> Article 14 asks for human-oversight evidence. This is it — every decision
-> the agent made, in one row, in one query, defensible to an auditor."*
+> *"The report you read was built from this one row — five structured fields, not
+> a replayed transcript. This is the workflow/episodic record; it is human-oversight
+> evidence an auditor can read. (Framing only — do not assert a specific regulatory
+> article such as EU AI Act Article 14 as a compliance guarantee.)"*
 
-### Tab 3 — `fraud_memory` (semantic memory, the compounding signal)
+### Tab 3 — governed facts: **operator view is on the Fact Layer, not here**
+
+The local `fraud_memory` table **no longer holds semantic memory** — it was
+retired when semantic memory moved to the governed Fact Layer. Do **not** show a
+local `fraud_memory` tab as the "compounding signal."
+
+Instead, the governed-fact lineage lives in the Fact Layer's own TiDB. The
+operator view is the single-query RCA:
 
 ```sql
-SELECT pattern_id, scope, entity_ref,
-       confidence,
-       evidence_count,
-       superseded_by,
-       last_reinforced_at,
-       LEFT(content, 80) AS pattern
-FROM fraud_memory
-WHERE superseded_by IS NULL
-ORDER BY last_reinforced_at DESC
-LIMIT 20;
+-- Run against the FACT LAYER's TiDB (Repo 1), not this repo's operational cluster.
+-- See sql/rca_lineage.sql — reconstructs a fact's full lineage
+-- (first assertion → every supersede/dispute → current truth) from the
+-- append-only, hash-chained fact_event log, filtered by tenant_id + subject.
 ```
 
-**Three things to point at:**
+> **Gap:** presenting governed-fact history/provenance *in the demo UI* (rather
+> than via a SQL editor on the Fact Layer's cluster) is a **WIRE/BUILD** gap. The
+> agent-facing equivalent is `explain_fact` (Beat 5).
 
-1. **`evidence_count`** — *"Every time a pattern wins the routing gate, this
-   number ticks up. It's the substrate's measure of which patterns are pulling
-   weight."*
-2. **`last_reinforced_at`** — *"This drives the confidence-decay duty. Patterns
-   that haven't been reinforced in the configured half-life window fade —
-   stale knowledge doesn't poison future reasoning."*
-3. **`superseded_by`** — show a row where it's non-null. *"This pattern was
-   retired by the deduplication custodial duty. The chain is preserved — full
-   audit history of what was learned and what replaced it. Reconciliation
-   uses the same column when contradicting evidence is resolved."*
-
-**The killer two-run demo:** Run the same investigation **twice**.
-
-- **First run:** agent fires `compound_resolution()` → new row in `fraud_memory`
-  with `evidence_count = 1`.
-- **Second run** (same trigger): routing SHORTCUTs against that new pattern →
-  `evidence_count` ticks to 2, `last_reinforced_at` becomes "just now."
-
-That's the **Gap-2 reinforcement signal + Duty-4 decay coupling** on screen,
-in one refresh. The system measurably learned in 60 seconds.
-
-### Tab 4 — `agent_sessions` (lineage, the audit trail)
+### Tab 4 — `agent_sessions` (lineage / audit trail)
 
 ```sql
 SELECT session_id, user_id,
@@ -242,57 +426,32 @@ ORDER BY created_at DESC
 LIMIT 15;
 ```
 
-**Proof moment:** When you want to show the compliance / audit story.
+**Proof moment (compliance/audit story):** every session knows where it came
+from; `parent_session` feeds a recursive walk of the investigation chain.
 
-> *"Every session knows where it came from. The UI bootstrap session created
-> the investigation session. The investigation session knows the entity it
-> was scoped to. Three minutes from now I can rebuild exactly what this
-> analyst saw, what the agent did, what got flagged, and which fraud pattern
-> got reinforced — all in this one cluster, no external sync, no audit-export
-> pipeline."*
+### What NOT to show
 
-For full lineage walk: `parent_session` from this query feeds back into
-`WHERE session_id = '<parent>'` — recursive trail of the entire investigation
-chain.
-
----
-
-## The money-shot sequence
-
-If you want one *"watch this"* moment during the demo, run this sequence with
-the database UI in split-screen next to the agent UI:
-
-1. **DB Tab 1 visible.** Filter `WHERE status='pending'`. Note the order_id of a row that matches the trigger you're about to use.
-2. **Agent UI.** Type `investigate suspicious orders from IP 185.15.54.22` (or your chosen trigger from the README's known-good list).
-3. Let the investigation run. Agent flags the order live.
-4. **DB Tab 1 — refresh.** Row is now `flagged`, with the agent's reasoning in `flagged_reason`.
-5. **Switch to DB Tab 2.** New `agent_reasoning` row at the top. *"That's the episodic memory write."*
-6. **Switch to DB Tab 3.** Either `evidence_count` bumped on an existing pattern (warm path) or a brand-new pattern row appeared (cold path that compounded). *"That's the semantic memory write."*
-7. **Switch to DB Tab 4.** New session row with `source = 'agent_ui.investigation'` and `parent_session` pointing at the bootstrap. *"That's the audit trail."*
-
-Four tabs, four writes, **one cluster, one transaction boundary, one connection
-string** — the full Thesis 04 + Thesis 10 story in 90 seconds of clicking.
-
-## What NOT to show in the database UI
-
-- **`chat_history` table.** Verbose, mostly noise, distracts from the
-  structured `agent_reasoning` story. The point of `agent_reasoning` is that
-  it's the cleaner audit artefact. Don't undercut it by showing the
-  transcript table.
-- **Legacy session metadata.** Sessions from before the audit-trail commit
-  have `JSON_EXTRACT(metadata, '$.source') = 'run_agent.py'` — relabel them
-  to `'legacy'` before the demo, or filter them out at query time, or be
-  prepared to tell the honest story.
+- **`chat_history` table.** Verbose transcript; undercuts the cleaner
+  `agent_reasoning` story.
+- **Legacy session metadata.** Pre-audit-trail sessions may carry
+  `source = 'run_agent.py'`; relabel to `'legacy'`, filter them, or tell the
+  honest story.
+- **A local `fraud_memory` tab as the semantic-memory money shot** — retired; see
+  Tab 3.
 
 ---
 
 ## Audience-specific opening lines
 
 **For Data & Analytics:**
-> *"You told us retrieval is hard because the dataset is huge. We've built something that shows you why — and what the alternative looks like."*
+> *"You told us retrieval is hard because the dataset is huge. We'll show you why
+> — and what one governed substrate for operational data, memory, and policy
+> looks like."*
 
 **For the Economic Crime Hub:**
-> *"Your analysts open a queue item and spend the first five minutes pulling context from four different systems. We've eliminated those five minutes."*
+> *"Your analysts open a queue item and spend the first minutes pulling context
+> from four different systems, then still can't fully defend the call. We assemble
+> the context and — the part that matters — we can explain the verdict."*
 
 ---
 
@@ -300,17 +459,27 @@ string** — the full Thesis 04 + Thesis 10 story in 90 seconds of clicking.
 
 They will ask. Don't dodge. Their scale warrants a streaming layer.
 
-> *"Flink is excellent at stream processing — ingesting events, applying windowed rules, detecting velocity bursts in real-time. We don't replace that. What we replace is everything that comes after the detection event: the investigation context, the pattern memory, the agent reasoning, the historical lookups. Flink fires the alert. TiDB is where the intelligence lives that makes the alert meaningful."*
+> *"Flink is excellent at stream processing — ingesting events, applying windowed
+> rules, detecting velocity bursts in real-time. We don't replace that. We replace
+> everything after the detection event: the investigation context, the pattern
+> memory, the agent reasoning, the governed record of what's true. Flink fires the
+> alert. TiDB and the Fact Layer are where the intelligence lives that makes the
+> alert meaningful and defensible."*
 
-This is the Ververica wedge: **they solve detection. TiDB solves memory.** At tier-1 scale both layers are needed. Positioning TiDB as Flink's memory substrate is honest and stronger than positioning it as Flink's replacement.
+**They solve detection. We solve memory and governed truth.**
 
 ---
 
 ## The closing line
 
-For the Fraud Operations lead:
+For the Fraud Operations lead (qualified — no unmeasured economics):
 
-> *"Every fraud pattern your team has ever investigated is currently trapped in a ticket system or an analyst's memory. This platform turns every confirmed investigation into a compounding signal — the next agent session that encounters a similar pattern arrives already briefed, routes to a cheaper model, and produces a structured report in seconds. The system gets more accurate and cheaper at the same time, automatically, with no retraining."*
+> *"Every fraud pattern your team has ever investigated is currently trapped in a
+> ticket system or an analyst's memory. This architecture turns a confirmed
+> investigation into recallable precedent, and — the part procurement cares about
+> — into a governed fact you can explain: what we believe, why, on whose
+> authority, and what argued against it. Whether the next investigation also comes
+> out cheaper or faster is exactly what we'd measure together in a POC."*
 
 ---
 
@@ -318,19 +487,114 @@ For the Fraud Operations lead:
 
 When invoked on this repo as a working assistant:
 
-1. **Trust the assembled context.** It was built before you saw the prompt. Don't re-fetch what Tiers 1–5 already gave you.
-2. **Don't call `DESCRIBE` unless the schema isn't in your prompt.** The adapter's `SCHEMA_HINT` is in every system prompt; using it saves a tool round.
-3. **Write a structured checkpoint before ending.** The summary is built from your checkpoint, not your conversation. Make the checkpoint precise.
-4. **Persist only what passes write control.** `compound_resolution()` will reject below 0.85; don't try to bypass.
-5. **Honour the routing decision.** If you're on the shortcut path with 3 rounds, work fast. If you're on explore with 15, work thoroughly.
+1. **Trust the assembled context.** Tiers 1–4 (operational) and Tier 5 (governed
+   recall) were built before you saw the prompt. Don't re-fetch what they gave you.
+2. **Don't call `DESCRIBE` unless the schema isn't in your prompt.** The adapter's
+   `SCHEMA_HINT` ships in every system prompt.
+3. **Write a structured checkpoint before ending.** The summary is built from your
+   checkpoint, not your conversation. Make it precise.
+4. **Persist only confirmed verdicts.** `compound_resolution()` calls the governed
+   `record_fact`; **write control is enforced server-side** on the Fact Layer.
+   Don't try to bypass it.
+5. **Use `explain_fact` before re-investigating** — check what is already durably
+   known and why.
+6. **Honour the routing decision.** Shortcut path (3 rounds) → work fast; explore
+   path (15 rounds) → work thoroughly.
+
+---
+
+## Claims audit
+
+Every quantitative or absolute claim in the prior directive, audited against
+current implementation. Retained only where grounded; otherwise qualified or removed.
+
+| Prior claim | Status | Disposition |
+|---|---|---|
+| "<50ms / ~50ms" whole-assembly | ⚠️ Partly false | Holds for **local Tiers 1–4** (pure SQL, zero LLM). **Tier 5 is a remote server-side-embedded MCP call** — not local, not sub-50ms. Reworded; whole-assembly latency = benchmark opportunity. |
+| "~37% fewer tokens" | ❌ Unmeasured | Removed as fact. Marked hypothesis / benchmark target. |
+| "same quality" (warm run) | ❌ Unmeasured | Removed. Routing mechanism retained; quality parity is a hypothesis. |
+| "more accurate" / "cheaper" | ❌ Unmeasured | Qualified as POC-measurable, not established. |
+| "automatically" (system gets better) | ⚠️ Overreach | Softened; write control gates what persists. |
+| "one transaction boundary" (all concerns) | ❌ Incorrect | Fact Layer is a **separate service** (Repo 1). Corrected to *two* boundaries by design; operational/analytical/episodic/docs on one cluster, governed truth on the Fact Layer. |
+| "every confirmed investigation becomes a routable pattern" | ⚠️ Overreach | Softened — server-side write control (confidence floor) gates persistence. |
+| EU AI Act Article 14 | ❌ Removed as guarantee | Kept only as *framing* ("human-oversight evidence"), not a compliance claim. |
+| FPR math (150k–170k/day at 1%) | ✅ Illustrative | Retained as arithmetic on the buyer's stated scale, labelled illustrative — not a measured product metric. |
+| Reconciliation / decay / compaction "stubs" | ⚠️ Stale | Updated: reconciliation is **LIVE single-mode server-side**; dedup **retired** (canonical subject keys); decay **deferred** (no fact-model analog); compaction **POC-phase**. Per `ARCHITECTURE.md` + `../aws/ARCHITECTURE.md`. |
+| `fraud_memory` table as semantic-memory money shot | ❌ Retired | Local `fraud_memory` no longer holds semantic memory; operator view is RCA on the Fact Layer's TiDB. |
+| A/B/C DENY "blocks execution" | ⚠️ Deployment-dependent | Current deployment is **LOG_ONLY** — A/B/C are **observed Cedar decisions**, not proof of blocking. ENFORCE is production posture. |
+
+**Do not manufacture benchmark evidence.** Where a number would help, run it in a
+POC with the customer and cite the measurement.
+
+---
+
+## Demo implementation gaps
+
+Derived from inspecting current Repo 2 code. Classification:
+**READY** (implemented, locally demonstrable now) · **WIRE** (capability exists,
+orchestration/UI wiring missing) · **SEED** (implementation exists, deterministic
+demo data needed) · **BUILD** (capability does not currently exist).
+
+| Demo beat / capability | Status | Evidence / gap |
+|---|---|---|
+| **Fact Layer MCP client** (`record_fact`, `get_fact`, `get_fact_history`, `list_disputes`, `explain_fact`, `vector_search`, `search_entities`, `retract_fact`, `query_tenant_metrics`) | **READY** | Full thin wrappers in `fact_layer_client.py`. Requires the Fact Layer Gateway env (`FACT_LAYER_GATEWAY_URL`, Cognito creds) reachable. |
+| **`assemble_context()` operational tiers (1–4)** | **READY** | Pure SQL, adapter-delegated, tenant-scoped (`agent_tools.py:497`). |
+| **`assemble_context()` Tier-5 governed recall** | **READY** | `fact_layer_client.vector_search`, server-side embedded, tenant-scoped (`agent_tools.py:602`). Depends on Gateway reachability + seeded catalog. |
+| **John-specific governed facts in the assembled brief** (`get_fact`/`get_fact_history`) | **WIRE** | `assemble_context()` calls only Tier-5 *recall*, not `get_fact`/`get_fact_history`. Adding a per-subject governed-fact read to assembly is unbuilt. |
+| **Official-doc / policy retrieval in the brief** | **WIRE** | Exists only as an on-demand agent tool `vector_search('sales_knowledge')` (`cognitive_loop.py`), not part of `assemble_context()`. |
+| **`get_fact`** | **READY** (agent-callable requires WIRE) | Client wrapper ready; **not** exposed as an agent loop tool. |
+| **`get_fact_history`** | **WIRE** | Client wrapper ready; not an agent tool and not in the UI. |
+| **`list_disputes`** | **WIRE** | Client wrapper ready; not an agent tool and not in the UI. |
+| **`explain_fact` (agent tool)** | **READY** | Wired as a loop tool (`cognitive_loop.py:166`, dispatch `:259`) and callable in `scenarios/contradiction_demo.py`. |
+| **`explain_fact` presented as a provenance/authority panel** | **WIRE** | Surfaced only as a raw tool-result line in the UI chain-of-thought; no formatted provenance panel. |
+| **`vector_search` (semantic recall)** | **READY** | Both Tier-5 (`assemble_context`) and on-demand (`recall_similar_fraud`, `agent_tools.py:988`). |
+| **Investigate loop** (routing, tools, checkpoint, write-back) | **READY** | `cognitive_loop.run_investigation` + `agent_ui.py`. |
+| **Operational write-back** (`flag_order`) | **READY** | Loop tool; DB Tab 1 proof. |
+| **Structured episodic checkpoint + slim summary** | **READY** | `write_reasoning_checkpoint` + Stage-4 summary. |
+| **Controlled FRAUD vs NOT_FRAUD disagreement** | **READY (CLI) / WIRE+SEED (in UI on John)** | LIVE via `scenarios/contradiction_demo.py` (supersede / reject / dispute). Uses random per-run subjects; wiring onto canonical John/TX123 inside the investigation UI is unbuilt. |
+| **`explain_fact` money-shot on the disputed fact** | **READY (CLI) / WIRE (UI panel)** | CLI prints the provenance payload; UI panel missing. |
+| **Governance A/B/C ALLOW/DENY as a presentable view** | **BUILD** | Cross-tenant DENY is config-demonstrable and the UI has a tenant selector, but there is no A/B/C panel. Deployment is LOG_ONLY (decisions observed, not blocking). |
+| **Second-run model routing (warm shortcut)** | **WIRE + SEED** | `route_investigation` exists (`agent_tools.py`); reliable warm shortcut needs deterministic seeded precedent matching a known trigger. |
+| **Deterministic demo seed** (Acme/John/TX123 across operational DB + Fact Layer) | **SEED** | Catalog seeding exists (`seed_fraud_memory_from_adapter`, UI button); concrete entities today are `demo-bank-alpha` / customer 4 / IP `185.15.54.22`. Acme/John/TX123 naming + aligned operational+fact seed is unbuilt. |
+| **Deterministic demo reset** | **BUILD (partial)** | UI "Clear Memory" resets session only; no operational/fact reset script. Fact Layer is append-only (reset via fresh subjects, as `contradiction_demo.py` does with per-run ids). |
+| **UI presentation of provenance/history** | **BUILD** | No provenance/history/dispute rendering in `agent_ui.py`; operator view is RCA SQL on the Fact Layer's TiDB. |
+
+### Minimum implementation path for a deterministic 3–5 min executive slice
+
+To make **Beat 1 → 2 → 3 → 5** reliable and deterministic (no live-demo surprises):
+
+1. **SEED** one canonical entity end-to-end: an Acme (`demo-bank-alpha`) customer
+   "John" with a specific order "TX123" in `orders`, plus a matching governed fact
+   for `fraud:customer:<john>` seeded on the Fact Layer, and a relevant policy row
+   in `sales_knowledge`. Reuse existing seed scripts + `seed_fraud_memory_from_adapter`.
+2. **WIRE** `get_fact` (or `explain_fact`) into the assembled brief *display* so
+   Beat 2 shows John's governed facts as a distinct source (keep it conceptually
+   separate from Tier-5 recall and from docs).
+3. **WIRE** an `explain_fact` provenance panel into `agent_ui.py` (resolution,
+   winning authority, supporting vs contrary evidence, history) so Beat 5 is a
+   formatted money shot, not a raw tool-result line.
+4. **(Extended cut) WIRE + SEED** the FRAUD-vs-NOT_FRAUD disagreement onto the John
+   subject so Beat 4 → Beat 5 runs on the same entity the audience just watched.
+5. **(Optional) BUILD** a minimal A/B/C panel for the governance aside; until then
+   demonstrate DENY by configuration and state LOG_ONLY explicitly.
+
+No gaps are implemented in this pass — this is documentation/planning only.
 
 ---
 
 ## References
 
-- [../ARCHITECTURE.md](../ARCHITECTURE.md) — architecture deep-dive: theses status, lifecycle diagram, three-tier memory, custodial duties
-- [../MEMORY_MAINTENANCE_POC.md](../MEMORY_MAINTENANCE_POC.md) — POC planning conversations for Duty 3 (Reconciliation) and Duty 5 (Compaction). Bring this to the POC kickoff.
-- [cognitive_loop.py](../cognitive_loop.py) — the loop and the system prompt
-- [agent_tools.py](../agent_tools.py) — substrate functions (assemble, route, duties)
-- [adapters/fraud/__init__.py](../adapters/fraud/__init__.py) — fraud adapter tier callables + SEED_CATALOG + SCHEMA_HINT
-- [adapters/betting/__init__.py](../adapters/betting/__init__.py) — second adapter (Thesis 11 proof)
+- **[../aws/ARCHITECTURE.md](../../aws/ARCHITECTURE.md)** — **Repo 1**: the governed
+  Fact Layer's authoritative contract (adjudication, Cedar governance, LOG_ONLY vs
+  ENFORCE, L0–L4). Cross-reference rather than duplicate.
+- [../ARCHITECTURE.md](../ARCHITECTURE.md) — this repo's architecture: theses
+  status, lifecycle, three-tier memory, custodial duties (fact-layer port)
+- [../MEMORY_MAINTENANCE_POC.md](../MEMORY_MAINTENANCE_POC.md) — POC planning for
+  reconciliation-queue mode and compaction policy
+- [../fact_layer_client.py](../fact_layer_client.py) — MCP caller + subject-key convention
+- [../cognitive_loop.py](../cognitive_loop.py) — the loop, tools, and system prompt
+- [../agent_tools.py](../agent_tools.py) — `assemble_context`, routing, `compound_resolution`, `explain_fact`
+- [../scenarios/contradiction_demo.py](../scenarios/contradiction_demo.py) — LIVE controlled-disagreement + `explain_fact` scenario
+- [../sql/rca_lineage.sql](../sql/rca_lineage.sql) — single-query fact lineage (operator view, on the Fact Layer's TiDB)
+- [../fact_layer_targets/README.md](../fact_layer_targets/README.md) — this repo's domain read targets on the Fact Layer Gateway
+- [adapters/fraud/__init__.py](../adapters/fraud/__init__.py) — fraud adapter tiers + SEED_CATALOG + SCHEMA_HINT

@@ -17,7 +17,7 @@ config = {
     'port': int(os.getenv('TIDB_PORT', 4000)),
     'user': os.getenv('TIDB_USER'),
     'password': os.getenv('TIDB_PASSWORD'),
-    'database': os.getenv('TIDB_DATABASE', 'test'),
+    'database': os.getenv('TIDB_DATABASE', 'agentcore_fraud'),
     'ssl_ca': os.getenv('TIDB_SSL_CA'),
     'ssl_verify_cert': True
 }

@@ -13,10 +13,12 @@ substrate-generic — they live in agent_tools.assemble_context and are
 NOT adapter concerns. Do not add T3 or T5 here.
 
 Session convention (required for tier_4_prior):
-  create_session(session_id, user_id=str(entity_ref))
-  user_id must be the customer_id (as string) or ip_address — NOT "guest".
-  tier_4_prior joins on agent_sessions.user_id = entity_ref; if user_id is
-  set to a default value, prior investigations will silently return empty.
+  create_session(session_id, tenant_id, user_id=str(entity_ref))
+  tenant_id is required (workflow data scope) and user_id must be the
+  customer_id (as string) or ip_address — NOT "guest". tier_4_prior filters on
+  agent_sessions.user_id = entity_ref AND agent_sessions.tenant_id; if user_id
+  is a default value prior investigations return empty, and a mismatched tenant
+  is correctly excluded (no cross-tenant recall).
 
 Sports betting patterns live in adapters/betting/SEED_CATALOG (separate
 adapter on the same substrate — Thesis 11).
@@ -171,22 +173,26 @@ def tier_2_recent(cursor, entity_ref: str, tenant_id: str) -> tuple[list[str], s
 def tier_4_prior(cursor, entity_ref: str, tenant_id: str = None) -> tuple[list[str], str]:
     """Build the Tier 4 prior-investigations block.
 
-    Reads the episodic memory tables (agent_reasoning / agent_sessions), which
-    are NOT domain tables and carry no tenant_id column in this port — they are
-    scoped by user_id=entity_ref. tenant_id is accepted for signature symmetry
-    with the other tiers but is not a SQL filter here.
+    Reads the episodic/workflow tables (agent_reasoning / agent_sessions). These
+    are keyed by user_id=entity_ref, which is NOT unique across tenants (two
+    tenants can each have a customer_id 4), so the query MUST also filter on
+    agent_sessions.tenant_id — otherwise one tenant's prior investigation would
+    surface for another tenant using the same entity id. Fails closed if the
+    tenant scope is missing.
     """
     if not entity_ref:
         return [], "degraded_no_entity"
+    if not tenant_id:
+        return [], "degraded_no_tenant"
 
     try:
         cursor.execute(
             """SELECT ar.hypothesis, ar.resolution, ar.confidence
                FROM agent_reasoning ar
                JOIN agent_sessions s ON s.session_id = ar.session_id
-               WHERE s.user_id = %s
+               WHERE s.user_id = %s AND s.tenant_id = %s
                ORDER BY ar.created_at DESC LIMIT 3""",
-            (str(entity_ref),),
+            (str(entity_ref), str(tenant_id)),
         )
         rows = cursor.fetchall()
         if not rows:

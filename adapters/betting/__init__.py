@@ -163,20 +163,24 @@ def tier_2_recent(cursor, entity_ref: str, tenant_id: str) -> tuple[list[str], s
 def tier_4_prior(cursor, entity_ref: str, tenant_id: str = None) -> tuple[list[str], str]:
     """Build the Tier 4 prior-investigations block — same shape as fraud.
 
-    Reads episodic memory tables (not domain tables, no tenant_id column);
-    scoped by user_id=entity_ref. tenant_id accepted for signature symmetry.
+    Reads episodic/workflow tables keyed by user_id=entity_ref, which is NOT
+    unique across tenants, so the query MUST also filter on
+    agent_sessions.tenant_id to prevent cross-tenant leakage. Fails closed when
+    the tenant scope is missing.
     """
     if not entity_ref:
         return [], "degraded_no_entity"
+    if not tenant_id:
+        return [], "degraded_no_tenant"
 
     try:
         cursor.execute(
             """SELECT ar.hypothesis, ar.resolution, ar.confidence
                FROM agent_reasoning ar
                JOIN agent_sessions s ON s.session_id = ar.session_id
-               WHERE s.user_id = %s
+               WHERE s.user_id = %s AND s.tenant_id = %s
                ORDER BY ar.created_at DESC LIMIT 3""",
-            (str(entity_ref),),
+            (str(entity_ref), str(tenant_id)),
         )
         rows = cursor.fetchall()
         if not rows:

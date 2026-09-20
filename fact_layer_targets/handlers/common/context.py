@@ -1,21 +1,23 @@
-"""Interceptor-injected request context + tool-arg extraction (domain read tools).
+"""Tenant-scope context for the domain read tools (AgentCore MCP target contract).
 
-Mirror of the fact layer's own context contract (aws/handlers/common/context.py)
-so these domain read Lambdas plug into the SAME Gateway / interceptor / Cedar
-pipeline. Enforcement order is: request interceptor -> Cedar -> tool. By the time
-a handler runs, Cedar has verified context.input.tenant_id == the caller's
-tenant_id claim, and the interceptor has injected the verified identity.
+An AgentCore MCP Lambda target receives ONLY the tool-arguments map — there is no
+`_fact_ctx` side channel, and the request interceptor does NOT inject tenant
+identity / a tenant_secret_arn / agent_id / session_id (see the Fact Layer's
+`ARCHITECTURE.md` in the `aws` repo, which is authoritative for the generic
+contract). These domain read tools follow the same proven pattern:
 
-The handler trusts the INTERCEPTOR-injected tenant_id for all DB work (never the
-raw tool argument) and asserts the two agree as defense in depth.
+  * `tenant_id` is read from the TOOL ARGUMENTS — the requested DATA SCOPE (tenant
+    selector), NOT authenticated identity. Missing/empty fails closed. Any legacy
+    `_fact_ctx` on the event is ignored and can NEVER override the tool argument.
+    Authorizing that the caller may select this scope is the Gateway governance
+    layer's job (reference same-tenant profile: Cedar tenant-equality). The SQL
+    tenant predicate in each handler is DATA SCOPING, not caller authorization.
+  * the domain DB credential ARN comes from deployment configuration
+    (`DOMAIN_READS_SECRET_ARN`) — a single secret for THIS repo's transactional
+    store (orders/bets), resolved by ARN at runtime. Fails closed if unset.
 
-Injected-context contract (what the interceptor puts on the event):
-    event["_fact_ctx"] = {
-        "tenant_id":         "<verified JWT tenant claim>",
-        "agent_id":          "<caller identity>",
-        "session_id":        "<session>",
-        "tenant_secret_arn": "arn:aws:secretsmanager:...:secret:...",
-    }
+These remain intentionally DOMAIN-SPECIFIC targets owned by this repo; they are
+not, and must not become, generic Fact Layer tools.
 """
 
 from __future__ import annotations
@@ -24,63 +26,48 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
-_CTX_KEYS = ("_fact_ctx", "context", "bedrockAgentCoreContext")
-_ARG_KEYS = ("input", "arguments", "body")
-
-# Fallback secret ARN for THIS repo's demo TiDB (the transactional store these
-# read tools query). Used only if the interceptor did not inject a per-tenant one.
-_DEFAULT_SECRET_ARN = os.environ.get("DOMAIN_READS_SECRET_ARN")
+# Legacy keys that must NOT be treated as authenticated context anymore; if a
+# caller or a stale interceptor puts one on the event it is ignored — it can never
+# override the actual tool argument.
+_LEGACY_CTX_KEYS = ("_fact_ctx", "context", "bedrockAgentCoreContext")
+# Some target wirings nest the arguments; accept either shape.
+_ARG_WRAPPERS = ("input", "arguments", "body")
 
 
 @dataclass(frozen=True)
 class ToolContext:
-    tenant_id: str
-    agent_id: str
-    session_id: str
-    tenant_secret_arn: str
+    tenant_id: str            # requested data scope (tenant selector), not identity
+    tenant_secret_arn: str    # domain-store credential, from DOMAIN_READS_SECRET_ARN
 
 
-def _find_context(event: dict) -> dict:
-    for k in _CTX_KEYS:
-        if isinstance(event.get(k), dict):
-            return event[k]
-    return {}
-
-
-def _find_args(event: dict) -> dict:
-    for k in _ARG_KEYS:
+def _tool_args(event: dict) -> dict[str, Any]:
+    """Return the tool-argument map, stripping any legacy context keys."""
+    if not isinstance(event, dict):
+        return {}
+    for k in _ARG_WRAPPERS:
         if isinstance(event.get(k), dict):
             return dict(event[k])
-    return {k: v for k, v in event.items() if k not in _CTX_KEYS}
+    return {k: v for k, v in event.items() if k not in _LEGACY_CTX_KEYS}
 
 
 def extract(event: dict) -> tuple[ToolContext, dict[str, Any]]:
-    """Return (verified ToolContext, tool_args). Raises if identity is absent."""
-    raw = _find_context(event)
-    tenant_id = raw.get("tenant_id")
-    if not tenant_id:
-        raise PermissionError(
-            "no verified tenant_id in request context — the interceptor must "
-            "inject the identity before the handler runs"
-        )
-    secret_arn = raw.get("tenant_secret_arn") or _DEFAULT_SECRET_ARN
-    if not secret_arn:
-        raise ValueError(
-            "no tenant-scoped secret ARN in context and DOMAIN_READS_SECRET_ARN unset"
-        )
-    ctx = ToolContext(
-        tenant_id=str(tenant_id),
-        agent_id=str(raw.get("agent_id", "unknown")),
-        session_id=str(raw.get("session_id", "unknown")),
-        tenant_secret_arn=str(secret_arn),
-    )
-    args = _find_args(event)
+    """Return (ToolContext, tool_args) from an MCP target event. Fails closed.
 
-    # Defense in depth: a tool-arg tenant_id must match the verified claim.
-    arg_tenant = args.get("tenant_id")
-    if arg_tenant is not None and str(arg_tenant) != ctx.tenant_id:
+    `tenant_id` is the requested data scope taken from the tool argument; a
+    missing/empty value raises PermissionError.
+    """
+    args = _tool_args(event)
+
+    raw_tenant = args.get("tenant_id")
+    if raw_tenant is None or not str(raw_tenant).strip():
         raise PermissionError(
-            f"tenant_id argument ({arg_tenant}) does not match verified claim "
-            f"({ctx.tenant_id})"
+            "tenant_id argument is required and must be non-empty "
+            "(the Gateway-authorized requested data scope)"
         )
-    return ctx, args
+    tenant_id = str(raw_tenant).strip()
+
+    secret_arn = os.environ.get("DOMAIN_READS_SECRET_ARN")
+    if not secret_arn:
+        raise ValueError("DOMAIN_READS_SECRET_ARN is not configured")
+
+    return ToolContext(tenant_id=tenant_id, tenant_secret_arn=secret_arn), args
